@@ -1,12 +1,15 @@
-"""Classical Sudoku solver for 2x2 and 3x3 (Latin-square style).
+"""Classical Sudoku/Latin-square solver.
 
 This script provides a small, well-typed backtracking solver that
 handles N x N puzzles where each row and each column must contain the
-numbers 1..N exactly once. It supports N=2 and N=3 and includes example
-puzzles and a simple CLI entry point (run with no args to solve examples).
+numbers 1..N exactly once. When N is a perfect square (for example
+N=4 or N=9) the solver also enforces the standard Sudoku box
+constraint (square subgrids of size sqrt(N)).
 
-Run as: python Code/sudoku_classical.py
+Includes example puzzles for 2x2, 3x3 (Latin-square style) and a
+4x4 Sudoku example. Run as: python Code/sudoku.py
 """
+import math
 from typing import List, Optional, Tuple
 
 
@@ -35,6 +38,15 @@ def is_valid(grid: Grid, r: int, c: int, val: int) -> bool:
     # column
     if any(grid[i][c] == val for i in range(n)):
         return False
+    # If n is a perfect square, also enforce subgrid (box) constraint
+    root = int(math.isqrt(n))
+    if root * root == n:
+        br = (r // root) * root
+        bc = (c // root) * root
+        for i in range(br, br + root):
+            for j in range(bc, bc + root):
+                if grid[i][j] == val:
+                    return False
     return True
 
 
@@ -78,12 +90,26 @@ def example_3x3() -> Grid:
     return [[0, 2, 3], [3, 0, 2], [2, 3, 0]]
 
 
+def example_4x4() -> Grid:
+    # 4x4 Sudoku example (uses 2x2 boxes). Zeros are empty cells.
+    # This puzzle is solvable; solution should be a valid 4x4 Sudoku.
+    return [
+        [1, 0, 0, 4],
+        [0, 4, 1, 0],
+        [0, 0, 2, 1],
+        [2, 0, 0, 3],
+    ]
+
+
 def main() -> None:
     print("== 2x2 example ==")
     solve_and_print(example_2x2())
     print()
     print("== 3x3 example ==")
     solve_and_print(example_3x3())
+    print()
+    print("== 4x4 example ==")
+    solve_and_print(example_4x4())
 
 
 if __name__ == "__main__":
