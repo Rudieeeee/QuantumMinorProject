@@ -1,4 +1,4 @@
-"""Classical Sudoku/Latin-square solver.
+"""Sudoku/Latin-square solver with classical and quantum (Grover) backends.
 
 This script provides a small, well-typed backtracking solver that
 handles N x N puzzles where each row and each column must contain the
@@ -6,11 +6,14 @@ numbers 1..N exactly once. When N is a perfect square (for example
 N=4 or N=9) the solver also enforces the standard Sudoku box
 constraint (square subgrids of size sqrt(N)).
 
+For 2x2 puzzles, a quantum Grover's algorithm solver is also available.
+
 Includes example puzzles for 2x2, 3x3 (Latin-square style) and a
 4x4 Sudoku example. Run as: python Code/sudoku.py
 """
 import math
 from typing import List, Optional, Tuple
+from quantum_grover_2x2 import grover_solve_2x2
 
 
 Grid = List[List[int]]
@@ -79,6 +82,17 @@ def solve_and_print(grid: Grid) -> None:
         print_grid(sol)
 
 
+def solve_2x2_with_grover(puzzle: Grid) -> None:
+    """Solve a 2x2 puzzle using Grover's algorithm (if Qiskit available)."""
+    print("Puzzle:")
+    print_grid(puzzle)
+    print("\nAttempting quantum Grover solver...")
+    sol = grover_solve_2x2([row[:] for row in puzzle])
+    if sol is None:
+        print("Grover solver failed or Qiskit unavailable; falling back to classical.")
+        solve_and_print([row[:] for row in puzzle])
+
+
 def example_2x2() -> Grid:
     # Simple 2x2 puzzle: top-left given as 1, rest empty
     # Unique solution: [[1,2],[2,1]]
@@ -102,8 +116,11 @@ def example_4x4() -> Grid:
 
 
 def main() -> None:
-    print("== 2x2 example ==")
+    print("== 2x2 example (Classical) ==")
     solve_and_print(example_2x2())
+    print()
+    print("== 2x2 example (Quantum Grover) ==")
+    solve_2x2_with_grover(example_2x2())
     print()
     print("== 3x3 example ==")
     solve_and_print(example_3x3())
