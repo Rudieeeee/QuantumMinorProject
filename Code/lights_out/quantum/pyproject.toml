@@ -1,0 +1,11 @@
+[project]
+name = "quantum"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "qiskit-aer>=0.17.2",
+    "qiskit-quantuminspire>=0.15.0",
+    "qiskit[visualization]==2.1.2",
+]
