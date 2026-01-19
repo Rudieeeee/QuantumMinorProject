@@ -103,7 +103,7 @@ def minimal_relative_constraints(board, unknown_map):
 
     return sorted(constraints)
 
-def generate_constraints(test=False):
+def generate_constraints(nr_constraints, test=False):
     if (test):
         puzzle = [[3, 0, 4, 0], [0, 1, 0, 2], [0, 4, 0, 3], [2, 0, 1, 0]]
     else:
@@ -121,12 +121,13 @@ def generate_constraints(test=False):
     for row in puzzle:
         print(row)
 
+    nr_vc = int(3 * len(value_constraints) / 4)
+    nr_rc = nr_constraints - nr_vc
+
     print("\nValue constraints:")
-    print(value_constraints)
+    print(value_constraints[: nr_vc])
 
     print("\nRelative constraints:")
-    print(relative_constraints)
+    print(relative_constraints[ : nr_rc])
 
-    return value_constraints, relative_constraints
-
-generate_constraints(test=True)
+    return value_constraints[: nr_vc], relative_constraints[ : nr_rc]
