@@ -1,5 +1,11 @@
 use anyhow::Result;
-use super::Tile;
+
+pub enum Tile {
+    Water,
+    Beach,
+    Grass,
+    Forest,
+}
 
 fn get_index(position: (usize, usize), size: (usize, usize)) -> usize {
     position.0 + position.1 * size.0
