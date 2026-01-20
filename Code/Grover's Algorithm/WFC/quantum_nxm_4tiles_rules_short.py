@@ -23,13 +23,11 @@ def get_adjacencies(rows, cols):
             adjacencies.append((row * cols + col, (row + 1) * cols + col))
     return adjacencies
 
-def calculate_iterations(num_tiles):
-    if num_tiles <= 4:
-        return 4
-    elif num_tiles <= 9:
-        return 8
-    else:
-        return 12
+def calculate_iterations(num_tiles, num_valid):
+    N = 4 ** num_tiles
+    M = num_valid
+    return max(1, int(np.floor(np.pi / (4 * np.arcsin(np.sqrt(M / N))))))
+
 
 def grover_oracle_with_helpers(qc, data, ancillas, helpers, output, adjacencies):
     # Step 1: For each adjacency, use helper to implement OR of all invalid patterns
@@ -136,7 +134,9 @@ def run_wfc_grover(rows, cols):
     qc.x(output)
     qc.h(output)
     
-    num_iterations = calculate_iterations(num_tiles)
+    num_valid = 65  # for 2x2 with your rules
+    num_iterations = calculate_iterations(num_tiles, num_valid)
+
     print(f"Iterations: {num_iterations}")
     
     for i in range(num_iterations):

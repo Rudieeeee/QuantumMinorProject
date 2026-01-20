@@ -8,7 +8,7 @@ from qiskit.visualization import plot_histogram
 # CONFIGURE YOUR GRID SIZE HERE
 # ============================================
 GRID_ROWS = 2  # Number of rows (n)
-GRID_COLS = 3  # Number of columns (m)
+GRID_COLS = 2  # Number of columns (m)
 # ============================================
 
 # --------------------------------------------------
