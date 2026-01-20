@@ -1,125 +1,163 @@
-from qiskit import QuantumCircuit
-from qiskit_aer import AerSimulator
-from qiskit.visualization import plot_histogram
+import numpy as np
 import matplotlib.pyplot as plt
+from qiskit import QuantumCircuit
+from qiskit_aer import Aer
+from qiskit.visualization import plot_histogram
 
 # --------------------------------------------------
-# XNOR helper
+# Tile decoding
 # --------------------------------------------------
-def xnor(qc, a, b, out):
-    qc.cx(a, out)
-    qc.cx(b, out)
-    qc.x(out)
+TILE_MAP = {
+    "00": "Water",
+    "01": "Sand",
+    "10": "Grass",
+    "11": "Jungle"
+}
 
-# --------------------------------------------------
-# Circuit
-# --------------------------------------------------
-qc = QuantumCircuit(16, 8)
-
-# Data qubits (2 per cell)
-A0, A1 = 0, 1
-B0, B1 = 2, 3
-C0, C1 = 4, 5
-D0, D1 = 6, 7
-
-# Oracle flag
-FLAG = 8
-
-# Per-constraint equality results
-AB, AC, BD, CD = 9, 10, 11, 12
-
-# Temporary XNOR ancillas
-T0, T1 = 13, 14
-
-# AND helper
-ANDTMP = 15
+COLOR_MAP = {
+    "Water": (0.2, 0.4, 1.0),
+    "Sand": (0.9, 0.85, 0.6),
+    "Grass": (0.2, 0.7, 0.2),
+    "Jungle": (0.0, 0.4, 0.0)
+}
 
 # --------------------------------------------------
-# 1️⃣ Superposition
+# Valid adjacency lookup
 # --------------------------------------------------
-qc.h(range(8))
-
-# --------------------------------------------------
-# 2️⃣ Oracle: adjacency constraints
-# --------------------------------------------------
-
-# ---- A == B ----
-xnor(qc, A0, B0, T0)
-xnor(qc, A1, B1, T1)
-qc.ccx(T0, T1, AB)
-xnor(qc, A1, B1, T1)
-xnor(qc, A0, B0, T0)
-
-# ---- A == C ----
-xnor(qc, A0, C0, T0)
-xnor(qc, A1, C1, T1)
-qc.ccx(T0, T1, AC)
-xnor(qc, A1, C1, T1)
-xnor(qc, A0, C0, T0)
-
-# ---- B == D ----
-xnor(qc, B0, D0, T0)
-xnor(qc, B1, D1, T1)
-qc.ccx(T0, T1, BD)
-xnor(qc, B1, D1, T1)
-xnor(qc, B0, D0, T0)
-
-# ---- C == D ----
-xnor(qc, C0, D0, T0)
-xnor(qc, C1, D1, T1)
-qc.ccx(T0, T1, CD)
-xnor(qc, C1, D1, T1)
-xnor(qc, C0, D0, T0)
-
-# AND all constraints → FLAG
-qc.mcx([AB, AC, BD, CD], FLAG)
-
-# Phase flip
-qc.z(FLAG)
+VALID = {
+    "Water": {"Water", "Sand"},
+    "Sand": {"Water", "Sand", "Grass"},
+    "Grass": {"Sand", "Grass", "Jungle"},
+    "Jungle": {"Grass", "Jungle"}
+}
 
 # --------------------------------------------------
-# 3️⃣ Uncompute oracle
+# Helper: compare two 2-qubit tiles
 # --------------------------------------------------
-qc.mcx([AB, AC, BD, CD], FLAG)
-
-# Uncompute constraints (reverse order)
-for (X0, X1, Y0, Y1, OUT) in [
-    (C0, C1, D0, D1, CD),
-    (B0, B1, D0, D1, BD),
-    (A0, A1, C0, C1, AC),
-    (A0, A1, B0, B1, AB),
-]:
-    xnor(qc, X0, Y0, T0)
-    xnor(qc, X1, Y1, T1)
-    qc.ccx(T0, T1, OUT)
-    xnor(qc, X1, Y1, T1)
-    xnor(qc, X0, Y0, T0)
+def invalid_pair(tile_a, tile_b):
+    return tile_b not in VALID[tile_a]
 
 # --------------------------------------------------
-# 4️⃣ Diffusion
+# Oracle: mark ONLY invalid grids (flip phase)
 # --------------------------------------------------
-qc.h(range(8))
-qc.x(range(8))
+def grover_oracle(qc, data, flag):
+    # We mark invalid configurations by flipping the flag qubit
+    # when we encounter forbidden adjacencies
+    
+    for a, b in [(0,1),(0,2),(1,3),(2,3)]:
+        for ta in TILE_MAP:
+            for tb in TILE_MAP:
+                if invalid_pair(TILE_MAP[ta], TILE_MAP[tb]):
+                    idx = []
+                    for i, bit in enumerate(ta):
+                        if bit == "0":
+                            qc.x(data[2*a+i])
+                        idx.append(data[2*a+i])
+                    for i, bit in enumerate(tb):
+                        if bit == "0":
+                            qc.x(data[2*b+i])
+                        idx.append(data[2*b+i])
 
-qc.h(7)
-qc.mcx(list(range(7)), 7)
-qc.h(7)
+                    qc.mcx(idx, flag)
 
-qc.x(range(8))
-qc.h(range(8))
+                    for i, bit in enumerate(ta):
+                        if bit == "0":
+                            qc.x(data[2*a+i])
+                    for i, bit in enumerate(tb):
+                        if bit == "0":
+                            qc.x(data[2*b+i])
 
 # --------------------------------------------------
-# 5️⃣ Measurement
+# Diffusion
 # --------------------------------------------------
-qc.measure(range(8), range(8))
+def diffuser(qc, qubits):
+    qc.h(qubits)
+    qc.x(qubits)
+    qc.h(qubits[-1])
+    qc.mcx(qubits[:-1], qubits[-1])
+    qc.h(qubits[-1])
+    qc.x(qubits)
+    qc.h(qubits)
+
+# --------------------------------------------------
+# Validate solution
+# --------------------------------------------------
+def is_valid_grid(bitstring):
+    tiles = [bitstring[i:i+2] for i in range(0, 8, 2)]
+    decoded = [TILE_MAP[t] for t in tiles]
+    
+    # Check all adjacencies
+    adjacencies = [(0,1), (0,2), (1,3), (2,3)]
+    for a, b in adjacencies:
+        if decoded[b] not in VALID[decoded[a]]:
+            return False
+    return True
+
+# --------------------------------------------------
+# Build Grover circuit with multiple iterations
+# --------------------------------------------------
+qc = QuantumCircuit(9, 8)
+data = list(range(8))
+flag = 8
+
+# Initialize superposition
+qc.h(data)
+qc.x(flag)
+qc.h(flag)
+
+# Apply Grover iterations (optimal is ~sqrt(N/M) where N=256, M=valid solutions)
+# Using 3-4 iterations for a 2x2 grid works well empirically
+num_iterations = 3
+
+for _ in range(num_iterations):
+    grover_oracle(qc, data, flag)
+    diffuser(qc, data)
+
+# Measure
+qc.measure(data, range(8))
 
 # --------------------------------------------------
 # Run
 # --------------------------------------------------
-sim = AerSimulator()
-result = sim.run(qc, shots=2000).result()
+backend = Aer.get_backend("qasm_simulator")
+result = backend.run(qc, shots=8192).result()
 counts = result.get_counts()
 
-print(counts)
-plot_histogram(counts)
+# --------------------------------------------------
+# Filter for valid solutions only
+# --------------------------------------------------
+valid_counts = {k: v for k, v in counts.items() if is_valid_grid(k)}
+
+if not valid_counts:
+    print("No valid solutions found! Showing all results:")
+    valid_counts = counts
+
+# Find best valid solution
+best = max(valid_counts, key=valid_counts.get)
+tiles = [best[i:i+2] for i in range(0, 8, 2)]
+decoded = [TILE_MAP[t] for t in tiles]
+
+print(f"\nBest solution: {best}")
+print(f"Decoded tiles: {decoded}")
+print(f"Probability: {valid_counts[best]/sum(valid_counts.values())*100:.1f}%")
+print(f"Is valid: {is_valid_grid(best)}")
+
+# --------------------------------------------------
+# Plot histogram (only valid solutions)
+# --------------------------------------------------
+plot_histogram(valid_counts)
+plt.title("Valid WFC Configurations")
+plt.show()
+
+# --------------------------------------------------
+# Plot WFC grid
+# --------------------------------------------------
+grid = np.zeros((2,2,3))
+for i, tile in enumerate(decoded):
+    r, c = divmod(i, 2)
+    grid[r,c] = COLOR_MAP[tile]
+
+plt.imshow(grid)
+plt.axis("off")
+plt.title(f"WFC Grid: {decoded}")
 plt.show()

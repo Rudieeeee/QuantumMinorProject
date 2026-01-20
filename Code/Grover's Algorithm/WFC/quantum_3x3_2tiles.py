@@ -2,6 +2,7 @@ from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
 from qiskit.visualization import plot_histogram
 import matplotlib.pyplot as plt
+import numpy as np
 
 # --------------------------------------------------
 # XNOR helper
@@ -77,7 +78,7 @@ qc.mcx(
     FLAG
 )
 
-# Vertical (reverse order)
+# Vertical (reverse)
 xnor(qc, F, I, FI)
 xnor(qc, C, F, CF)
 xnor(qc, E, H, EH)
@@ -94,7 +95,7 @@ xnor(qc, B, C, BC)
 xnor(qc, A, B, AB)
 
 # --------------------------------------------------
-# 4️⃣ Diffusion operator (on 9 data qubits)
+# 4️⃣ Diffusion operator
 # --------------------------------------------------
 qc.h(range(9))
 qc.x(range(9))
@@ -118,6 +119,38 @@ sim = AerSimulator()
 result = sim.run(qc, shots=20000).result()
 counts = result.get_counts()
 
+print("Measurement counts:")
 print(counts)
+
 plot_histogram(counts)
+plt.show()
+
+# --------------------------------------------------
+# Pick highest probability result
+# --------------------------------------------------
+best_state = max(counts, key=counts.get)
+print("Chosen state:", best_state)
+
+# Qiskit order: I H G F E D C B A → reverse
+bits = best_state[::-1]
+
+# --------------------------------------------------
+# Render 3x3 grid image
+# --------------------------------------------------
+color_map = {
+    "0": [0.2, 0.5, 1.0],  # water
+    "1": [0.2, 0.8, 0.2],  # grass
+}
+
+grid = np.array([
+    [color_map[bits[0]], color_map[bits[1]], color_map[bits[2]]],
+    [color_map[bits[3]], color_map[bits[4]], color_map[bits[5]]],
+    [color_map[bits[6]], color_map[bits[7]], color_map[bits[8]]],
+])
+
+plt.figure(figsize=(5, 5))
+plt.imshow(grid)
+plt.xticks([])
+plt.yticks([])
+plt.title("Generated 3×3 Tile Grid\n(0 = water, 1 = grass)")
 plt.show()
