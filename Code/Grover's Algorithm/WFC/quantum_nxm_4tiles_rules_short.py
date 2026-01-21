@@ -1,206 +1,205 @@
+from itertools import chain
+import math
 import numpy as np
-import matplotlib.pyplot as plt
 from qiskit import QuantumCircuit
+from qiskit.circuit.library import grover_operator, MCMTGate, ZGate
 from qiskit_aer import Aer
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+import matplotlib.pyplot as plt
 
-GRID_ROWS = 2
-GRID_COLS = 2
+GRID_ROW_COUNT = 2
+GRID_COL_COUNT = 2
+GRID_TILE_COUNT = GRID_ROW_COUNT * GRID_COL_COUNT
+GRID_EDGES = []
+for row in range(GRID_ROW_COUNT):
+    for col in range(GRID_COL_COUNT - 1):
+        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * row + col + 1))
+for row in range(GRID_ROW_COUNT - 1):
+    for col in range(GRID_COL_COUNT):
+        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * (row + 1) + col))
+        
+DATA_QUBIT_COUNT = GRID_TILE_COUNT * 2
+HELPER_QUBIT_COUNT = 2  # Just 2 helpers, reused for all edges!
+RESULT_QUBIT_COUNT = len(GRID_EDGES)  # One result qubit per edge
+TOTAL_QUBIT_COUNT = DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT + RESULT_QUBIT_COUNT
+    
+DATA_QUBITS = list(range(DATA_QUBIT_COUNT))
+HELPER_QUBITS = list(range(DATA_QUBIT_COUNT, DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT))
+RESULT_QUBITS = list(range(DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT, TOTAL_QUBIT_COUNT))
 
 TILE_MAP = {"00": "Water", "01": "Sand", "10": "Grass", "11": "Jungle"}
 COLOR_MAP = {"Water": (0.2, 0.4, 1.0), "Sand": (0.9, 0.85, 0.6), "Grass": (0.2, 0.7, 0.2), "Jungle": (0.0, 0.4, 0.0)}
 VALID = {"Water": {"Water", "Sand"}, "Sand": {"Water", "Sand", "Grass"}, "Grass": {"Sand", "Grass", "Jungle"}, "Jungle": {"Grass", "Jungle"}}
 
-def invalid_pair(tile_a, tile_b):
-    return tile_b not in VALID[tile_a]
-
-def get_adjacencies(rows, cols):
-    adjacencies = []
-    for row in range(rows):
-        for col in range(cols - 1):
-            adjacencies.append((row * cols + col, row * cols + col + 1))
-    for row in range(rows - 1):
-        for col in range(cols):
-            adjacencies.append((row * cols + col, (row + 1) * cols + col))
-    return adjacencies
-
-def calculate_iterations(num_tiles, num_valid):
-    N = 4 ** num_tiles
-    M = num_valid
-    return max(1, int(np.floor(np.pi / (4 * np.arcsin(np.sqrt(M / N))))))
-
-def check_invalid_pattern(qc, data, tile_a_idx, tile_b_idx, pattern_a, pattern_b, ancilla):
-    """Check if a specific invalid pattern matches and mark ancilla"""
-    controls = []
-    
-    # Build control list for tile A
-    for i, bit in enumerate(pattern_a):
-        if bit == "0":
-            qc.x(data[2*tile_a_idx + i])
-        controls.append(data[2*tile_a_idx + i])
-    
-    # Build control list for tile B
-    for i, bit in enumerate(pattern_b):
-        if bit == "0":
-            qc.x(data[2*tile_b_idx + i])
-        controls.append(data[2*tile_b_idx + i])
-    
-    # Mark ancilla if this invalid pattern is present
-    qc.mcx(controls, ancilla)
-    
-    # Unflip the X gates
-    for i, bit in enumerate(pattern_a):
-        if bit == "0":
-            qc.x(data[2*tile_a_idx + i])
-    for i, bit in enumerate(pattern_b):
-        if bit == "0":
-            qc.x(data[2*tile_b_idx + i])
-
-def grover_oracle_proper(qc, data, ancillas, output, adjacencies):
-    """
-    Proper oracle implementation:
-    1. Check each adjacency for any invalid pattern -> set ancilla[i] = 1 if invalid
-    2. Output = 1 if ALL ancillas are 0 (all adjacencies valid)
-    3. Uncompute ancillas
-    """
-    num_ancillas = len(ancillas)
-    
-    # Step 1: For each adjacency, mark ancilla if ANY invalid pattern is present
-    for adj_idx, (a, b) in enumerate(adjacencies):
-        for ta in TILE_MAP:
-            for tb in TILE_MAP:
-                if invalid_pair(TILE_MAP[ta], TILE_MAP[tb]):
-                    check_invalid_pattern(qc, data, a, b, ta, tb, ancillas[adj_idx])
-    
-    # Step 2: Flip all ancillas (now ancilla[i]=1 means valid)
-    qc.x(ancillas)
-    
-    # Step 3: Output = 1 when ALL ancillas are 1 (all valid)
-    qc.mcx(ancillas, output)
-    
-    # Step 4: Flip ancillas back
-    qc.x(ancillas)
-    
-    # Step 5: Uncompute ancillas by repeating step 1 in reverse
-    for adj_idx, (a, b) in enumerate(adjacencies):
-        for ta in TILE_MAP:
-            for tb in TILE_MAP:
-                if invalid_pair(TILE_MAP[ta], TILE_MAP[tb]):
-                    check_invalid_pattern(qc, data, a, b, ta, tb, ancillas[adj_idx])
-
-def diffuser(qc, qubits):
-    qc.h(qubits)
-    qc.x(qubits)
-    qc.h(qubits[-1])
-    qc.mcx(qubits[:-1], qubits[-1])
-    qc.h(qubits[-1])
-    qc.x(qubits)
-    qc.h(qubits)
-
-def is_valid_grid(bitstring, adjacencies):
+def is_valid_grid(bitstring):
     tiles = [bitstring[i:i+2] for i in range(0, len(bitstring), 2)]
     decoded = [TILE_MAP[t] for t in tiles]
-    for a, b in adjacencies:
+    for a, b in GRID_EDGES:
         if decoded[b] not in VALID[decoded[a]]:
             return False
     return True
 
-def run_wfc_grover(rows, cols):
-    num_tiles = rows * cols
-    num_data_qubits = num_tiles * 2
-    adjacencies = get_adjacencies(rows, cols)
-    num_ancillas = len(adjacencies)
+def checkerboard_x(qc):
+    for row in range(GRID_ROW_COUNT):
+        for col in range(GRID_COL_COUNT):
+            if (row + col) % 2 == 1:
+                i = GRID_COL_COUNT * row + col
+                data = DATA_QUBITS[i*2:i*2+2]
+                qc.x(data)
+
+def check_single_edge(qc, edge_idx):
+    """
+    Check a single edge using the 2 helper qubits, store result in result_qubit
+    Then uncompute the helpers (reset them to |0>)
+    """
+    a, b = GRID_EDGES[edge_idx]
+    helpers = HELPER_QUBITS  # Always use the same 2 helpers
+    result = RESULT_QUBITS[edge_idx]  # But store in different result qubit per edge
+    data_a = DATA_QUBITS[a*2:a*2+2]
+    data_b = DATA_QUBITS[b*2:b*2+2]
     
-    num_qubits = num_data_qubits + num_ancillas + 1  # No helpers needed
+    # Phase 1: Mark helpers based on constraint patterns
+    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
+    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
     
-    print(f"Grid: {rows}×{cols}")
-    print(f"Data qubits: {num_data_qubits}")
-    print(f"Ancilla qubits: {num_ancillas}")
-    print(f"Output qubit: 1")
-    print(f"Total qubits: {num_qubits}")
+    # Phase 2: Check with flipped encodings
+    qc.x(data_a)
+    qc.x(data_b)
+    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
+    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
+    qc.x(data_a)
+    qc.x(data_b)
     
-    qc = QuantumCircuit(num_qubits, num_data_qubits)
-    data = list(range(num_data_qubits))
-    ancillas = list(range(num_data_qubits, num_data_qubits + num_ancillas))
-    output = num_data_qubits + num_ancillas
+    # Copy helpers to result: result = helpers[0] OR helpers[1]
+    # If either helper is 1, the edge is invalid
+    # We want result = 1 if edge is VALID (both helpers = 0)
+    qc.x(helpers)  # Flip: now helpers = 1 means no invalid pattern
+    qc.ccx(helpers[0], helpers[1], result)  # result = 1 if both helpers = 1
+    qc.x(helpers)  # Flip back
     
-    # Initialize: superposition on data qubits, output in |->
-    qc.h(data)
-    qc.x(output)
-    qc.h(output)
+    # Uncompute helpers (reverse the constraint checks)
+    qc.x(data_a)
+    qc.x(data_b)
+    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
+    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
+    qc.x(data_a)
+    qc.x(data_b)
     
-    # Calculate optimal iterations
-    num_valid = 54  # for 2x2 with your rules
-    num_iterations = calculate_iterations(num_tiles, num_valid)
-    print(f"Grover iterations: {num_iterations}")
+    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
+    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
     
-    # Grover iterations
-    for i in range(num_iterations):
-        grover_oracle_proper(qc, data, ancillas, output, adjacencies)
-        diffuser(qc, data)
+    # Now helpers are back to |00> and can be reused!
+
+def constraints_with_reuse():
+    """
+    Check all edges sequentially, reusing the same 2 helper qubits
+    Results are stored in separate result qubits
+    """
+    qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
     
-    # Measure
-    qc.measure(data, range(num_data_qubits))
+    # Check each edge one by one, reusing helpers
+    for i in range(len(GRID_EDGES)):
+        check_single_edge(qc, i)
+    
+    return qc
+
+def grover_oracle():
+    qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
+    
+    # Step 1: Compute all result qubits using reused helpers
+    qc.compose(constraints_with_reuse(), inplace=True)
+    
+    # Step 2: Apply multi-controlled Z when ALL result qubits = 1 (all edges valid)
+    qc.compose(MCMTGate(ZGate(), len(RESULT_QUBITS), len(DATA_QUBITS)), 
+               chain(RESULT_QUBITS, DATA_QUBITS), inplace=True)
+    
+    # Step 3: Uncompute result qubits
+    qc.compose(constraints_with_reuse().inverse(), inplace=True)
+    
+    return qc
+
+if __name__ == "__main__":
+    print(f"Grid size: {GRID_ROW_COUNT}×{GRID_COL_COUNT}")
+    print(f"Data Qubits: {DATA_QUBIT_COUNT}")
+    print(f"Helper Qubits (REUSED): {HELPER_QUBIT_COUNT}")
+    print(f"Result Qubits (one per edge): {RESULT_QUBIT_COUNT}")
+    print(f"Total qubits: {TOTAL_QUBIT_COUNT}")
+    print(f"Savings: {16 - TOTAL_QUBIT_COUNT} qubits vs original!")
+    
+    grover_op = grover_operator(grover_oracle(), reflection_qubits=DATA_QUBITS)
+    optimal_iterations_count = math.floor(math.pi / (4 * math.asin(math.sqrt(24 / 2**DATA_QUBIT_COUNT))))
+    print(f"Grover iterations: {optimal_iterations_count}")
+    
+    qc = QuantumCircuit(TOTAL_QUBIT_COUNT, DATA_QUBIT_COUNT)
+    qc.h(DATA_QUBITS)
+    qc.compose(grover_op.power(2), inplace=True)
+    checkerboard_x(qc)
+    qc.measure(DATA_QUBITS, range(DATA_QUBIT_COUNT))
     
     print("\nRunning simulation...")
     backend = Aer.get_backend("qasm_simulator")
-    result = backend.run(qc, shots=8192).result()
+    pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
+    circuit_isa = pm.run(qc)
+    result = backend.run(circuit_isa, shots=8192).result()
     counts = result.get_counts()
     
-    # Analyze results
-    valid_counts = {k: v for k, v in counts.items() if is_valid_grid(k, adjacencies)}
+    valid_counts = {k: v for k, v in counts.items() if is_valid_grid(k)}
     total_valid = sum(valid_counts.values())
     total_shots = sum(counts.values())
     
-    print(f"\nResults:")
-    print(f"Valid solutions: {total_valid}/{total_shots} ({100*total_valid/total_shots:.1f}%)")
+    print(f"\nValid: {total_valid}/{total_shots} ({100*total_valid/total_shots:.1f}%)")
     print(f"Unique valid configs: {len(valid_counts)}")
+    
+    if total_valid / total_shots > 0.9:
+        print("✓ SUCCESS: Still achieving >90% with ancilla reuse!")
+    elif total_valid / total_shots > 0.7:
+        print("⚠ PARTIAL: 70-90% success with ancilla reuse")
+    else:
+        print("✗ FAILURE: <70% success - ancilla reuse may have issues")
     
     if not valid_counts:
         print("WARNING: No valid solutions found!")
         valid_counts = counts
     
-    # Get best solution
     best = max(valid_counts, key=valid_counts.get)
     tiles = [best[i:i+2] for i in range(0, len(best), 2)]
     decoded = [TILE_MAP[t] for t in tiles]
     
-    print(f"\nMost common solution:")
-    print(f"  Bitstring: {best}")
-    print(f"  Decoded: {decoded}")
-    print(f"  Count: {valid_counts[best]}")
-    print(f"  Valid: {is_valid_grid(best, adjacencies)}")
+    print(f"\nBest solution: {decoded}")
+    print(f"Is valid: {is_valid_grid(best)}")
+    
+    # Show top 5 results
+    print(f"\nTop 5 results:")
+    sorted_counts = sorted(valid_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    for bitstring, count in sorted_counts:
+        tiles_temp = [bitstring[i:i+2] for i in range(0, len(bitstring), 2)]
+        decoded_temp = [TILE_MAP[t] for t in tiles_temp]
+        print(f"  {decoded_temp}: {count} ({100*count/total_shots:.1f}%)")
     
     # Visualize
-    grid = np.zeros((rows, cols, 3))
+    grid = np.zeros((GRID_ROW_COUNT, GRID_COL_COUNT, 3))
     for i, tile in enumerate(decoded):
-        grid[i // cols, i % cols] = COLOR_MAP[tile]
+        grid[i // GRID_COL_COUNT, i % GRID_COL_COUNT] = COLOR_MAP[tile]
     
-    fig, ax = plt.subplots(figsize=(max(6, cols*2), max(6, rows*2)))
+    fig, ax = plt.subplots(figsize=(max(6, GRID_COL_COUNT*2), max(6, GRID_ROW_COUNT*2)))
     ax.imshow(grid, interpolation='nearest')
     ax.axis("off")
     
-    # Add labels
     for i, tile in enumerate(decoded):
-        r, c = i // cols, i % cols
+        r, c = i // GRID_COL_COUNT, i % GRID_COL_COUNT
         ax.text(c, r, f"{i}\n{tile}", ha='center', va='center', 
-                fontsize=max(8, 12-max(rows,cols)), color='white', weight='bold',
-                bbox=dict(boxstyle='round', facecolor='black', alpha=0.6))
+                fontsize=max(8, 12-max(GRID_ROW_COUNT,GRID_COL_COUNT)), 
+                color='white', weight='bold', bbox=dict(boxstyle='round', facecolor='black', alpha=0.6))
     
-    # Add grid lines
-    for i in range(rows + 1):
+    for i in range(GRID_ROW_COUNT + 1):
         ax.axhline(i - 0.5, color='black', linewidth=2)
-    for j in range(cols + 1):
+    for j in range(GRID_COL_COUNT + 1):
         ax.axvline(j - 0.5, color='black', linewidth=2)
     
-    # Title with validity indicator
-    title_color = 'green' if is_valid_grid(best, adjacencies) else 'red'
-    ax.set_title(f"{rows}×{cols} WFC Grid (Grover)\nValid: {100*total_valid/total_shots:.1f}%", 
+    title_color = 'green' if is_valid_grid(best) else 'red'
+    success_rate = 100*total_valid/total_shots
+    ax.set_title(f"{GRID_ROW_COUNT}×{GRID_COL_COUNT} WFC (Ancilla Reuse)\n{TOTAL_QUBIT_COUNT} qubits, {success_rate:.1f}% valid", 
                  fontsize=14, color=title_color, weight='bold')
     
     plt.tight_layout()
     plt.show()
-    
-    return qc, counts, decoded
-
-if __name__ == "__main__":
-    run_wfc_grover(GRID_ROWS, GRID_COLS)

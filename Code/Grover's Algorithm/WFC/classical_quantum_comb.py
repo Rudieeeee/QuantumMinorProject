@@ -10,8 +10,8 @@ from qiskit_aer import Aer
 # ======================================================
 # CONFIG
 # ======================================================
-GRID_ROWS = 1
-GRID_COLS = 8
+GRID_ROWS = 2
+GRID_COLS = 3
 MAX_MARKED = 5        # <<< limit oracle size here
 SHOTS = 1
 
@@ -130,7 +130,7 @@ def run_wfc_grover(rows, cols):
     # GEOMETRIC ITERATION SELECTION
     # ----------------------------------------------
     theta = math.asin(math.sqrt(M / N))
-    max_k = 10
+    max_k = 100
 
     iterations = max(
         range(max_k + 1),

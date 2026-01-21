@@ -78,7 +78,7 @@ if __name__ == "__main__":
     print(f"Total qubits: {TOTAL_QUBIT_COUNT}")
     
     grover_op = grover_operator(grover_oracle(), reflection_qubits=DATA_QUBITS)
-    optimal_iterations_count = math.floor(math.pi / (4 * math.asin(math.sqrt(54 / 2**DATA_QUBIT_COUNT))))
+    optimal_iterations_count = math.floor(math.pi / (4 * math.asin(math.sqrt(24 / 2**DATA_QUBIT_COUNT))))
     print(f"Grover iterations: {optimal_iterations_count}")
     
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT, DATA_QUBIT_COUNT)
