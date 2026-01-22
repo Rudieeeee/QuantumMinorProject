@@ -1,31 +1,41 @@
 from itertools import chain
+from random import getrandbits
 import math
 import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import grover_operator, MCMTGate, ZGate
-from qiskit_aer import Aer
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
+
 import matplotlib.pyplot as plt
 
-GRID_ROW_COUNT = 2
-GRID_COL_COUNT = 2
+GRID_ROW_COUNT = 8
+GRID_COL_COUNT = 8
 GRID_TILE_COUNT = GRID_ROW_COUNT * GRID_COL_COUNT
 GRID_EDGES = []
 for row in range(GRID_ROW_COUNT):
     for col in range(GRID_COL_COUNT - 1):
-        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * row + col + 1))
+        a = GRID_COL_COUNT * row + col
+        b = GRID_COL_COUNT * row + col + 1
+        GRID_EDGES.append((a, b))
+        GRID_EDGES.append((b, a))
 for row in range(GRID_ROW_COUNT - 1):
     for col in range(GRID_COL_COUNT):
-        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * (row + 1) + col))
+        a = GRID_COL_COUNT * row + col
+        b = GRID_COL_COUNT * (row + 1) + col
+        GRID_EDGES.append((a, b))
+        GRID_EDGES.append((b, a))
         
 DATA_QUBIT_COUNT = GRID_TILE_COUNT * 2
-HELPER_QUBIT_COUNT = 2  # Just 2 helpers, reused for all edges!
-RESULT_QUBIT_COUNT = len(GRID_EDGES)  # One result qubit per edge
-TOTAL_QUBIT_COUNT = DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT + RESULT_QUBIT_COUNT
+MIN_ANCLILLA_QUBIT_COUNT = math.ceil((math.sqrt(8 * len(GRID_EDGES) - 7) + 1) / 2)
+ANCILLA_QUBIT_COUNT = MIN_ANCLILLA_QUBIT_COUNT
+TOTAL_QUBIT_COUNT = DATA_QUBIT_COUNT + ANCILLA_QUBIT_COUNT
     
 DATA_QUBITS = list(range(DATA_QUBIT_COUNT))
-HELPER_QUBITS = list(range(DATA_QUBIT_COUNT, DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT))
-RESULT_QUBITS = list(range(DATA_QUBIT_COUNT + HELPER_QUBIT_COUNT, TOTAL_QUBIT_COUNT))
+ANCILLA_QUBITS = list(range(DATA_QUBIT_COUNT, DATA_QUBIT_COUNT + ANCILLA_QUBIT_COUNT))
+
+GROVER_ITERATIONS = 9
+SHOT_COUNT = 1024
 
 TILE_MAP = {"00": "Water", "01": "Sand", "10": "Grass", "11": "Jungle"}
 COLOR_MAP = {"Water": (0.2, 0.4, 1.0), "Sand": (0.9, 0.85, 0.6), "Grass": (0.2, 0.7, 0.2), "Jungle": (0.0, 0.4, 0.0)}
@@ -47,136 +57,221 @@ def checkerboard_x(qc):
                 data = DATA_QUBITS[i*2:i*2+2]
                 qc.x(data)
 
-def check_single_edge(qc, edge_idx):
-    """
-    Check a single edge using the 2 helper qubits, store result in result_qubit
-    Then uncompute the helpers (reset them to |0>)
-    """
-    a, b = GRID_EDGES[edge_idx]
-    helpers = HELPER_QUBITS  # Always use the same 2 helpers
-    result = RESULT_QUBITS[edge_idx]  # But store in different result qubit per edge
-    data_a = DATA_QUBITS[a*2:a*2+2]
-    data_b = DATA_QUBITS[b*2:b*2+2]
-    
-    # Phase 1: Mark helpers based on constraint patterns
-    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
-    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
-    
-    # Phase 2: Check with flipped encodings
-    qc.x(data_a)
-    qc.x(data_b)
-    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
-    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
-    qc.x(data_a)
-    qc.x(data_b)
-    
-    # Copy helpers to result: result = helpers[0] OR helpers[1]
-    # If either helper is 1, the edge is invalid
-    # We want result = 1 if edge is VALID (both helpers = 0)
-    qc.x(helpers)  # Flip: now helpers = 1 means no invalid pattern
-    qc.ccx(helpers[0], helpers[1], result)  # result = 1 if both helpers = 1
-    qc.x(helpers)  # Flip back
-    
-    # Uncompute helpers (reverse the constraint checks)
-    qc.x(data_a)
-    qc.x(data_b)
-    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
-    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
-    qc.x(data_a)
-    qc.x(data_b)
-    
-    qc.mcx([data_a[1], data_b[1], data_a[0]], helpers[0])
-    qc.mcx([data_a[1], data_b[1], data_b[0]], helpers[1])
-    
-    # Now helpers are back to |00> and can be reused!
-
-def constraints_with_reuse():
-    """
-    Check all edges sequentially, reusing the same 2 helper qubits
-    Results are stored in separate result qubits
-    """
+def constraints():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
+    reserved_ancilla_count = 0
+    i = 0
+    while True:
+        qc_part = QuantumCircuit(TOTAL_QUBIT_COUNT)
+        used_ancillas = []
+
+        for j in range(ANCILLA_QUBIT_COUNT - reserved_ancilla_count - 1):
+            if i >= len(GRID_EDGES):
+                break
+
+            a, b = GRID_EDGES[i]
+            data = [DATA_QUBITS[a*2], DATA_QUBITS[a*2+1], DATA_QUBITS[b*2+1]]
+            ancilla = ANCILLA_QUBITS[j]
+
+            qc_part.mcx(data, ancilla)
+            qc_part.x(data)
+            qc_part.mcx(data, ancilla)
+            qc_part.x(data)
+            qc_part.x(ancilla)
+
+            i += 1
+            used_ancillas.append(ancilla)
+        
+        qc.compose(qc_part, inplace=True)
+
+        if i >= len(GRID_EDGES):
+            break
+
+        reserved_ancilla_count += 1
+        qc.mcx(used_ancillas, ANCILLA_QUBITS[-reserved_ancilla_count])
+        qc.compose(qc_part.inverse(), inplace=True)
     
-    # Check each edge one by one, reusing helpers
-    for i in range(len(GRID_EDGES)):
-        check_single_edge(qc, i)
-    
-    return qc
+    used_ancillas.extend(ANCILLA_QUBITS[-reserved_ancilla_count:])
+
+    return qc, used_ancillas
 
 def grover_oracle():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
-    
-    # Step 1: Compute all result qubits using reused helpers
-    qc.compose(constraints_with_reuse(), inplace=True)
-    
-    # Step 2: Apply multi-controlled Z when ALL result qubits = 1 (all edges valid)
-    qc.compose(MCMTGate(ZGate(), len(RESULT_QUBITS), len(DATA_QUBITS)), 
-               chain(RESULT_QUBITS, DATA_QUBITS), inplace=True)
-    
-    # Step 3: Uncompute result qubits
-    qc.compose(constraints_with_reuse().inverse(), inplace=True)
-    
+    constraints_qc, used_ancillas = constraints()
+    qc.compose(constraints_qc, inplace=True)
+    qc.compose(MCMTGate(ZGate(), len(used_ancillas), len(DATA_QUBITS)), chain(used_ancillas, DATA_QUBITS), inplace=True)
+    qc.compose(constraints_qc.inverse(), inplace=True)
     return qc
 
+def estimate_optimal_iterations(valid_probability):
+    p0 = 0
+    for i in range(SHOT_COUNT):
+        if is_valid_grid(f"{getrandbits(DATA_QUBIT_COUNT):0{DATA_QUBIT_COUNT}b}"):
+            p0 += 1
+    p0 /= SHOT_COUNT
+
+    a = math.acos(1 - 2 * p0)
+    b = math.acos(1 - 2 * valid_probability)
+    c = GROVER_ITERATIONS * math.pi * (1 - a / math.pi)
+
+    esitmate_up = c / (b - a)
+    estimate_down = c / (math.tau - b - a)
+
+    return esitmate_up, estimate_down
+
 if __name__ == "__main__":
-    print(f"Grid size: {GRID_ROW_COUNT}×{GRID_COL_COUNT}")
-    print(f"Data Qubits: {DATA_QUBIT_COUNT}")
-    print(f"Helper Qubits (REUSED): {HELPER_QUBIT_COUNT}")
-    print(f"Result Qubits (one per edge): {RESULT_QUBIT_COUNT}")
-    print(f"Total qubits: {TOTAL_QUBIT_COUNT}")
-    print(f"Savings: {16 - TOTAL_QUBIT_COUNT} qubits vs original!")
+    # ONE-TIME SETUP: Uncomment and run once to save your token
+    # QiskitRuntimeService.save_account(
+    #     channel="ibm_quantum_platform",
+    #     token="YOUR_TOKEN_HERE",
+    #     overwrite=True
+    # )
+    # print("Token saved! Comment out this section and run again.")
+    # exit()
     
+    print("=" * 60)
+    print("QUANTUM WAVE FUNCTION COLLAPSE - IBM QUANTUM HARDWARE")
+    print("=" * 60)
+    
+    # Load IBM Quantum service
+    print("\n[1/7] Connecting to IBM Quantum...")
+    try:
+        service = QiskitRuntimeService(channel="ibm_quantum_platform")
+        print("✓ Connected successfully!")
+    except Exception as e:
+        print(f"✗ Error connecting: {e}")
+        print("\nMake sure you've saved your token first!")
+        print("Uncomment the save_account section above and add your token.")
+        exit(1)
+    
+    # List available backends
+    print("\n[2/7] Available quantum backends:")
+    backends = service.backends(operational=True, simulator=False)
+    for backend in backends:
+        status = backend.status()
+        queue = status.pending_jobs
+        print(f"  • {backend.name}: {backend.num_qubits} qubits, Queue: {queue} jobs")
+    
+    # Select backend
+    print(f"\n[3/7] Selecting backend (need {TOTAL_QUBIT_COUNT} qubits)...")
+    try:
+        backend = service.least_busy(
+            operational=True, 
+            simulator=False, 
+            min_num_qubits=TOTAL_QUBIT_COUNT
+        )
+        print(f"✓ Selected: {backend.name} ({backend.num_qubits} qubits)")
+        print(f"  Queue: {backend.status().pending_jobs} jobs waiting")
+    except Exception as e:
+        print(f"✗ No available backend with {TOTAL_QUBIT_COUNT} qubits")
+        print(f"  Error: {e}")
+        print("\n  Tip: Try reducing GRID_ROW_COUNT and GRID_COL_COUNT")
+        exit(1)
+    
+    print(f"\nGrid configuration:")
+    print(f"  Size: {GRID_ROW_COUNT}×{GRID_COL_COUNT}")
+    print(f"  Data qubits: {DATA_QUBIT_COUNT}")
+    print(f"  Ancilla qubits: {ANCILLA_QUBIT_COUNT}")
+    print(f"  Total qubits: {TOTAL_QUBIT_COUNT}")
+    print(f"  Grover iterations: {GROVER_ITERATIONS}")
+    
+    # Build circuit
+    print("\n[4/7] Building quantum circuit...")
     grover_op = grover_operator(grover_oracle(), reflection_qubits=DATA_QUBITS)
-    optimal_iterations_count = math.floor(math.pi / (4 * math.asin(math.sqrt(24 / 2**DATA_QUBIT_COUNT))))
-    print(f"Grover iterations: {optimal_iterations_count}")
     
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT, DATA_QUBIT_COUNT)
     qc.h(DATA_QUBITS)
-    qc.compose(grover_op.power(2), inplace=True)
+    qc.compose(grover_op.power(GROVER_ITERATIONS), inplace=True)
     checkerboard_x(qc)
     qc.measure(DATA_QUBITS, range(DATA_QUBIT_COUNT))
     
-    print("\nRunning simulation...")
-    backend = Aer.get_backend("qasm_simulator")
-    pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
-    circuit_isa = pm.run(qc)
-    result = backend.run(circuit_isa, shots=8192).result()
-    counts = result.get_counts()
+    # Get classical register name for later
+    classical_register_name = qc.cregs[0].name
+    print(f"✓ Circuit built: {qc.depth()} gates deep, {qc.size()} total gates")
+    print(f"  Classical register name: '{classical_register_name}'")
     
+    # Transpile
+    print("\n[5/7] Transpiling for hardware...")
+    pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+    circuit_isa = pm.run(qc)
+    print(f"✓ Transpiled: {circuit_isa.depth()} gates deep (optimized)")
+    
+    # Submit job
+    print(f"\n[6/7] Submitting job to {backend.name}...")
+    print(f"  Shots: {SHOT_COUNT}")
+    sampler = Sampler(backend)
+    job = sampler.run([circuit_isa], shots=SHOT_COUNT)
+    print(f"✓ Job submitted!")
+    print(f"  Job ID: {job.job_id()}")
+    print(f"\n  Waiting for results...")
+    print(f"  (This may take several minutes depending on queue)")
+    print(f"  You can check status at: https://quantum.ibm.com/jobs/{job.job_id()}")
+    
+    # Get results
+    try:
+        result = job.result()
+        # Access counts using the classical register name
+        # result[0].data.<classical_register_name>.get_counts()
+        pub_result = result[0]
+        counts = getattr(pub_result.data, classical_register_name).get_counts()
+        print(f"✓ Results received!")
+        print(f"  Total measurements: {sum(counts.values())}")
+        print(f"  Unique outcomes: {len(counts)}")
+    except Exception as e:
+        print(f"✗ Job failed: {e}")
+        print(f"\nDebug info:")
+        print(f"  Classical register name: '{classical_register_name}'")
+        if 'result' in locals():
+            print(f"  Result type: {type(result)}")
+            if len(result) > 0:
+                print(f"  Available data attributes: {list(result[0].data.__dict__.keys())}")
+        exit(1)
+    
+    # Analyze results
+    print("\n[7/7] Analyzing results...")
     valid_counts = {k: v for k, v in counts.items() if is_valid_grid(k)}
     total_valid = sum(valid_counts.values())
-    total_shots = sum(counts.values())
     
-    print(f"\nValid: {total_valid}/{total_shots} ({100*total_valid/total_shots:.1f}%)")
-    print(f"Unique valid configs: {len(valid_counts)}")
+    valid_probability = total_valid / SHOT_COUNT
+    print(f"\n{'=' * 60}")
+    print("RESULTS")
+    print(f"{'=' * 60}")
+    print(f"Valid solutions: {total_valid}/{SHOT_COUNT} ({valid_probability*100:.1f}%)")
+    print(f"Unique valid configurations: {len(valid_counts)}")
     
-    if total_valid / total_shots > 0.9:
-        print("✓ SUCCESS: Still achieving >90% with ancilla reuse!")
-    elif total_valid / total_shots > 0.7:
-        print("⚠ PARTIAL: 70-90% success with ancilla reuse")
+    if valid_counts:
+        # Use valid solutions
+        best = max(valid_counts, key=valid_counts.get)
+        using_valid = True
     else:
-        print("✗ FAILURE: <70% success - ancilla reuse may have issues")
-    
-    if not valid_counts:
-        print("WARNING: No valid solutions found!")
-        valid_counts = counts
-    
-    best = max(valid_counts, key=valid_counts.get)
+        # No valid solutions found - use all results
+        print("\n⚠ WARNING: No valid solutions found!")
+        print("  This is likely due to hardware noise or incorrect Grover iterations.")
+        print("  Selecting most frequent result from all measurements...")
+        best = max(counts, key=counts.get)
+        using_valid = False
     tiles = [best[i:i+2] for i in range(0, len(best), 2)]
     decoded = [TILE_MAP[t] for t in tiles]
     
-    print(f"\nBest solution: {decoded}")
-    print(f"Is valid: {is_valid_grid(best)}")
+    is_best_valid = is_valid_grid(best)
+    best_count = valid_counts[best] if using_valid else counts[best]
     
-    # Show top 5 results
-    print(f"\nTop 5 results:")
-    sorted_counts = sorted(valid_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-    for bitstring, count in sorted_counts:
-        tiles_temp = [bitstring[i:i+2] for i in range(0, len(bitstring), 2)]
-        decoded_temp = [TILE_MAP[t] for t in tiles_temp]
-        print(f"  {decoded_temp}: {count} ({100*count/total_shots:.1f}%)")
+    print(f"\nBest solution (appeared {best_count} times):")
+    print(f"  {decoded}")
+    print(f"  Valid: {'✓ YES' if is_best_valid else '✗ NO'}")
+    if not using_valid:
+        print(f"  ⚠ Note: Selected from ALL results (no valid solutions found)")
+    
+    if total_valid > 0:
+        esitmate_up, estimate_down = estimate_optimal_iterations(valid_probability)
+        print("\nOptimal Grover iteration estimates:")
+        print(f"  If optimum > {GROVER_ITERATIONS}: {esitmate_up:.2f} iterations")
+        print(f"  If optimum < {GROVER_ITERATIONS}: {estimate_down:.2f} iterations")
+    else:
+        print("\n⚠ Cannot estimate optimal iterations (no valid solutions)")
     
     # Visualize
+    print("\n[8/7] Generating visualization...")
     grid = np.zeros((GRID_ROW_COUNT, GRID_COL_COUNT, 3))
     for i, tile in enumerate(decoded):
         grid[i // GRID_COL_COUNT, i % GRID_COL_COUNT] = COLOR_MAP[tile]
@@ -187,8 +282,7 @@ if __name__ == "__main__":
     
     for i, tile in enumerate(decoded):
         r, c = i // GRID_COL_COUNT, i % GRID_COL_COUNT
-        ax.text(c, r, f"{i}\n{tile}", ha='center', va='center', 
-                fontsize=max(8, 12-max(GRID_ROW_COUNT,GRID_COL_COUNT)), 
+        ax.text(c, r, f"{i}\n{tile}", ha='center', va='center', fontsize=max(8, 12-max(GRID_ROW_COUNT,GRID_COL_COUNT)), 
                 color='white', weight='bold', bbox=dict(boxstyle='round', facecolor='black', alpha=0.6))
     
     for i in range(GRID_ROW_COUNT + 1):
@@ -196,10 +290,17 @@ if __name__ == "__main__":
     for j in range(GRID_COL_COUNT + 1):
         ax.axvline(j - 0.5, color='black', linewidth=2)
     
-    title_color = 'green' if is_valid_grid(best) else 'red'
-    success_rate = 100*total_valid/total_shots
-    ax.set_title(f"{GRID_ROW_COUNT}×{GRID_COL_COUNT} WFC (Ancilla Reuse)\n{TOTAL_QUBIT_COUNT} qubits, {success_rate:.1f}% valid", 
-                 fontsize=14, color=title_color, weight='bold')
+    title_color = 'green' if is_best_valid else 'red'
+    if GRID_ROW_COUNT <= 3 and GRID_COL_COUNT <= 3:
+        grid_str = '\n'.join([str(decoded[row*GRID_COL_COUNT:(row+1)*GRID_COL_COUNT]) for row in range(GRID_ROW_COUNT)])
+        title = f"{GRID_ROW_COUNT}×{GRID_COL_COUNT} WFC Grid - IBM Quantum Hardware\n{backend.name}\n{grid_str}"
+        ax.set_title(title, fontsize=11, color=title_color, weight='bold')
+    else:
+        ax.set_title(f"{GRID_ROW_COUNT}×{GRID_COL_COUNT} WFC Grid - {backend.name}", fontsize=14, color=title_color, weight='bold')
     
     plt.tight_layout()
     plt.show()
+    
+    print(f"\n{'=' * 60}")
+    print("✓ Complete!")
+    print(f"{'=' * 60}")
