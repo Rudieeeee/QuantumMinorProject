@@ -1,4 +1,5 @@
 from itertools import chain
+from random import getrandbits
 import math
 import numpy as np
 from qiskit import QuantumCircuit
@@ -8,23 +9,33 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 import matplotlib.pyplot as plt
 
-GRID_ROW_COUNT = 2
-GRID_COL_COUNT = 2
+GRID_ROW_COUNT = 3
+GRID_COL_COUNT = 3
 GRID_TILE_COUNT = GRID_ROW_COUNT * GRID_COL_COUNT
 GRID_EDGES = []
 for row in range(GRID_ROW_COUNT):
     for col in range(GRID_COL_COUNT - 1):
-        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * row + col + 1))
+        a = GRID_COL_COUNT * row + col
+        b = GRID_COL_COUNT * row + col + 1
+        GRID_EDGES.append((a, b))
+        GRID_EDGES.append((b, a))
 for row in range(GRID_ROW_COUNT - 1):
     for col in range(GRID_COL_COUNT):
-        GRID_EDGES.append((GRID_COL_COUNT * row + col, GRID_COL_COUNT * (row + 1) + col))
+        a = GRID_COL_COUNT * row + col
+        b = GRID_COL_COUNT * (row + 1) + col
+        GRID_EDGES.append((a, b))
+        GRID_EDGES.append((b, a))
         
 DATA_QUBIT_COUNT = GRID_TILE_COUNT * 2
-ANCILLA_QUBIT_COUNT = len(GRID_EDGES) * 2
+MIN_ANCLILLA_QUBIT_COUNT = math.ceil((math.sqrt(8 * len(GRID_EDGES) - 7) + 1) / 2)
+ANCILLA_QUBIT_COUNT = MIN_ANCLILLA_QUBIT_COUNT
 TOTAL_QUBIT_COUNT = DATA_QUBIT_COUNT + ANCILLA_QUBIT_COUNT
     
 DATA_QUBITS = list(range(DATA_QUBIT_COUNT))
 ANCILLA_QUBITS = list(range(DATA_QUBIT_COUNT, DATA_QUBIT_COUNT + ANCILLA_QUBIT_COUNT))
+
+GROVER_ITERATIONS = 9
+SHOT_COUNT = 1024
 
 TILE_MAP = {"00": "Water", "01": "Sand", "10": "Grass", "11": "Jungle"}
 COLOR_MAP = {"Water": (0.2, 0.4, 1.0), "Sand": (0.9, 0.85, 0.6), "Grass": (0.2, 0.7, 0.2), "Jungle": (0.0, 0.4, 0.0)}
@@ -48,28 +59,65 @@ def checkerboard_x(qc):
 
 def constraints():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
-    for i, (a, b) in enumerate(GRID_EDGES):
-        ancillas = ANCILLA_QUBITS[i*2:i*2+2]
-        data_a = DATA_QUBITS[a*2:a*2+2]
-        data_b = DATA_QUBITS[b*2:b*2+2]
-        qc.mcx([data_a[1], data_b[1], data_a[0]], ancillas[0])
-        qc.mcx([data_a[1], data_b[1], data_b[0]], ancillas[1])
-        qc.x(data_a)
-        qc.x(data_b)
-        qc.mcx([data_a[1], data_b[1], data_a[0]], ancillas[0])
-        qc.mcx([data_a[1], data_b[1], data_b[0]], ancillas[1])
-        qc.x(data_a)
-        qc.x(data_b)
-    return qc
+    reserved_ancilla_count = 0
+    i = 0
+    while True:
+        qc_part = QuantumCircuit(TOTAL_QUBIT_COUNT)
+        used_ancillas = []
+
+        for j in range(ANCILLA_QUBIT_COUNT - reserved_ancilla_count - 1):
+            if i >= len(GRID_EDGES):
+                break
+
+            a, b = GRID_EDGES[i]
+            data = [DATA_QUBITS[a*2], DATA_QUBITS[a*2+1], DATA_QUBITS[b*2+1]]
+            ancilla = ANCILLA_QUBITS[j]
+
+            qc_part.mcx(data, ancilla)
+            qc_part.x(data)
+            qc_part.mcx(data, ancilla)
+            qc_part.x(data)
+            qc_part.x(ancilla)
+
+            i += 1
+            used_ancillas.append(ancilla)
+        
+        qc.compose(qc_part, inplace=True)
+
+        if i >= len(GRID_EDGES):
+            break
+
+        reserved_ancilla_count += 1
+        qc.mcx(used_ancillas, ANCILLA_QUBITS[-reserved_ancilla_count])
+        qc.compose(qc_part.inverse(), inplace=True)
+    
+    used_ancillas.extend(ANCILLA_QUBITS[-reserved_ancilla_count:])
+
+    return qc, used_ancillas
 
 def grover_oracle():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
-    qc.compose(constraints(), inplace=True)
-    qc.x(ANCILLA_QUBITS)
-    qc.compose(MCMTGate(ZGate(), len(ANCILLA_QUBITS), len(DATA_QUBITS)), chain(ANCILLA_QUBITS, DATA_QUBITS), inplace=True)
-    qc.x(ANCILLA_QUBITS)
-    qc.compose(constraints().inverse(), inplace=True)
+    constraints_qc, used_ancillas = constraints()
+    qc.compose(constraints_qc, inplace=True)
+    qc.compose(MCMTGate(ZGate(), len(used_ancillas), len(DATA_QUBITS)), chain(used_ancillas, DATA_QUBITS), inplace=True)
+    qc.compose(constraints_qc.inverse(), inplace=True)
     return qc
+
+def estimate_optimal_iterations(valid_probability):
+    p0 = 0
+    for i in range(SHOT_COUNT):
+        if is_valid_grid(f"{getrandbits(DATA_QUBIT_COUNT):0{DATA_QUBIT_COUNT}b}"):
+            p0 += 1
+    p0 /= SHOT_COUNT
+
+    a = math.acos(1 - 2 * p0)
+    b = math.acos(1 - 2 * valid_probability)
+    c = GROVER_ITERATIONS * math.pi * (1 - a / math.pi)
+
+    esitmate_up = c / (b - a)
+    estimate_down = c / (math.tau - b - a)
+
+    return esitmate_up, estimate_down
 
 if __name__ == "__main__":
     print(f"Grid size: {GRID_ROW_COUNT}×{GRID_COL_COUNT}")
@@ -78,12 +126,11 @@ if __name__ == "__main__":
     print(f"Total qubits: {TOTAL_QUBIT_COUNT}")
     
     grover_op = grover_operator(grover_oracle(), reflection_qubits=DATA_QUBITS)
-    optimal_iterations_count = math.floor(math.pi / (4 * math.asin(math.sqrt(24 / 2**DATA_QUBIT_COUNT))))
-    print(f"Grover iterations: {optimal_iterations_count}")
+    print(f"Grover iterations: {GROVER_ITERATIONS}")
     
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT, DATA_QUBIT_COUNT)
     qc.h(DATA_QUBITS)
-    qc.compose(grover_op.power(optimal_iterations_count), inplace=True)
+    qc.compose(grover_op.power(GROVER_ITERATIONS), inplace=True)
     checkerboard_x(qc)
     qc.measure(DATA_QUBITS, range(DATA_QUBIT_COUNT))
     
@@ -91,14 +138,14 @@ if __name__ == "__main__":
     backend = Aer.get_backend("qasm_simulator")
     pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
     circuit_isa = pm.run(qc)
-    result = backend.run(circuit_isa, shots=8192).result()
+    result = backend.run(circuit_isa, shots=SHOT_COUNT).result()
     counts = result.get_counts()
     
     valid_counts = {k: v for k, v in counts.items() if is_valid_grid(k)}
     total_valid = sum(valid_counts.values())
-    total_shots = sum(counts.values())
     
-    print(f"\nValid: {total_valid}/{total_shots} ({100*total_valid/total_shots:.1f}%)")
+    valid_probability = total_valid / SHOT_COUNT
+    print(f"\nValid: {total_valid}/{SHOT_COUNT} ({valid_probability*100:.1f}%)")
     print(f"Unique valid configs: {len(valid_counts)}")
     
     if not valid_counts:
@@ -111,6 +158,11 @@ if __name__ == "__main__":
     
     print(f"Best solution: {decoded}")
     print(f"Is valid: {is_valid_grid(best)}")
+
+    esitmate_up, estimate_down = estimate_optimal_iterations(valid_probability)
+    print("\nOptimal Grover iteration estimates:")
+    print(f"If optimum is above {GROVER_ITERATIONS}: {esitmate_up:.2f}")
+    print(f"If optimum is below {GROVER_ITERATIONS}: {estimate_down:.2f}")
     
     grid = np.zeros((GRID_ROW_COUNT, GRID_COL_COUNT, 3))
     for i, tile in enumerate(decoded):
