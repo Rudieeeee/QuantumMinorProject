@@ -5,7 +5,9 @@ description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
     "matplotlib>=3.10.8",
+    "python-dotenv>=1.2.1",
     "qiskit-aer>=0.17.2",
+    "qiskit-ibm-runtime>=0.45.0",
     "qiskit-quantuminspire>=0.15.0",
     "qiskit[visualization]==2.1.2",
 ]
