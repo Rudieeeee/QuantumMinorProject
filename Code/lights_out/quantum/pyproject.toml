@@ -8,6 +8,5 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "qiskit-aer>=0.17.2",
     "qiskit-ibm-runtime>=0.45.0",
-    "qiskit-quantuminspire>=0.15.0",
-    "qiskit[visualization]==2.1.2",
+    "qiskit[visualization]==2.3.0",
 ]

@@ -6,8 +6,8 @@ from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
 from qiskit.primitives import StatevectorSampler
 import matplotlib.pyplot as plt
 from qiskit.visualization import plot_histogram
-from qiskit.circuit.library import grover_operator
-from qiskit_quantuminspire import cqasm as qi_cqasm
+
+# from qiskit_quantuminspire import cqasm as qi_cqasm
 from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
 from qiskit_ibm_runtime.fake_provider import FakeFez, FakeTorino, FakeMarrakesh
 from qiskit.transpiler import generate_preset_pass_manager
@@ -20,34 +20,34 @@ from dotenv import load_dotenv
 # )
 
 
-def export_cqasm(
-    circuit: QuantumCircuit,
-    output_path: str = "ciruit.cq",
-    backend_name: str | None = None,
-) -> None:
-    """Export a Qiskit circuit to cQASM (Quantum Inspire) and write it to disk."""
-    if not backend_name:
-        raise ValueError(
-            "backend_name is required (e.g. backend_name='Tuna-9'). "
-            "This exporter transpiles against a specific Quantum Inspire backend."
-        )
+# def export_cqasm(
+#     circuit: QuantumCircuit,
+#     output_path: str = "ciruit.cq",
+#     backend_name: str | None = None,
+# ) -> None:
+#     """Export a Qiskit circuit to cQASM (Quantum Inspire) and write it to disk."""
+#     if not backend_name:
+#         raise ValueError(
+#             "backend_name is required (e.g. backend_name='Tuna-9'). "
+#             "This exporter transpiles against a specific Quantum Inspire backend."
+#         )
 
-    # qiskit-quantuminspire's cQASM exporter relies on qubit indices; if you use
-    # multiple QuantumRegisters, Qiskit's per-register indices can collide (e.g.
-    # v[0] and t[0] both have index 0). Flatten to a single register first.
-    flattened = QuantumCircuit(circuit.num_qubits, circuit.num_clbits)
-    flattened.compose(
-        circuit, qubits=flattened.qubits, clbits=flattened.clbits, inplace=True
-    )
+#     # qiskit-quantuminspire's cQASM exporter relies on qubit indices; if you use
+#     # multiple QuantumRegisters, Qiskit's per-register indices can collide (e.g.
+#     # v[0] and t[0] both have index 0). Flatten to a single register first.
+#     flattened = QuantumCircuit(circuit.num_qubits, circuit.num_clbits)
+#     flattened.compose(
+#         circuit, qubits=flattened.qubits, clbits=flattened.clbits, inplace=True
+#     )
 
-    from qiskit_quantuminspire.qi_provider import QIProvider
+#     from qiskit_quantuminspire.qi_provider import QIProvider
 
-    backend = QIProvider().get_backend(backend_name)
+#     backend = QIProvider().get_backend(backend_name)
 
-    transpiled = transpile(flattened, backend=backend, optimization_level=3)
-    cqasm_str = qi_cqasm.dumps(transpiled)
+#     transpiled = transpile(flattened, backend=backend, optimization_level=3)
+#     cqasm_str = qi_cqasm.dumps(transpiled)
 
-    Path(output_path).write_text(cqasm_str, encoding="utf-8")
+#     Path(output_path).write_text(cqasm_str, encoding="utf-8")
 
 
 def generate_conditions(size):
@@ -82,6 +82,50 @@ def generate_conditions(size):
     return conditions
 
 
+def add_oracle(
+    qc, var_qubits, temp_qubits, output_qubit, conditions, ancilla_qubits=None
+):
+    # Optimize layout by grouping CNOTs by their relative offset.
+    # This ensures that gates operating on disjoint sets of qubits are added
+    # in "layers", helping the compiler schedule them in parallel to reduce circuit depth.
+    layers = {}
+    for vars, temp in conditions:
+        for var in vars:
+            diff = var - temp
+            if diff not in layers:
+                layers[diff] = []
+            layers[diff].append((var, temp))
+
+    # Sort offsets to apply layers in a consistent order (e.g. self, then neighbors)
+    # This structure (v-t) naturally groups: Center, Right, Left, Down, Up interactions
+    sorted_offsets = sorted(layers.keys())
+
+    # Forward CNOTs (Compute)
+    for offset in sorted_offsets:
+        for var, temp in layers[offset]:
+            qc.cx(var_qubits[var], temp_qubits[temp])
+
+    # Use MCX. The transpiler's HighLevelSynthesis pass will automatically
+    # use the available ancilla qubits in the circuit for an optimal decomposition
+    # (e.g. v-chain) when optimization_level=3 is used.
+    qc.mcx(temp_qubits, output_qubit, ancilla_qubits=ancilla_qubits, mode="v-chain")
+
+    # Reverse CNOTs (Uncompute) - mirror order for symmetry
+    for offset in sorted_offsets[::-1]:
+        for var, temp in layers[offset]:
+            qc.cx(var_qubits[var], temp_qubits[temp])
+
+
+def add_grover_diffusion(qc, var_qubits):
+    qc.h(var_qubits)
+    qc.x(var_qubits)
+    qc.h(var_qubits[-1])
+    qc.mcx(var_qubits[:-1], var_qubits[-1])
+    qc.h(var_qubits[-1])
+    qc.x(var_qubits)
+    qc.h(var_qubits)
+
+
 def create_lights_out_circuit(size, initial_state, num_iterations=3):
     """
     Create a quantum circuit for solving Lights Out game using Grover's algorithm.
@@ -100,32 +144,27 @@ def create_lights_out_circuit(size, initial_state, num_iterations=3):
     # Create quantum registers
     var_qubits = QuantumRegister(n, name="v")
     temp_qubits = QuantumRegister(n, name="t")
+    # For v-chain decomposition of MCX with n controls, we need n-2 ancillas (for n>=3)
+    # Using a few ancillas generally helps depth on hardware topologies.
+    num_ancillas = max(0, n - 2)
+    ancilla_qubits = (
+        QuantumRegister(num_ancillas, name="anc") if num_ancillas > 0 else None
+    )
+
     output_qubit = QuantumRegister(1, name="out")
     cbits = ClassicalRegister(n, name="cbits")
 
     # Generate conditions for the grid
     conditions = generate_conditions(size)
 
-    # Create oracle circuit
-    oracle = QuantumCircuit(var_qubits, temp_qubits, output_qubit)
+    # Quantum circuit
+    registers = [var_qubits, temp_qubits]
+    if ancilla_qubits:
+        registers.append(ancilla_qubits)
+    registers.append(output_qubit)
+    registers.append(cbits)
 
-    for vars, temp in conditions:
-        for var in vars:
-            oracle.cx(var_qubits[var], temp_qubits[temp])
-
-    oracle.mcx(temp_qubits, output_qubit)
-
-    for vars, temp in conditions:
-        for var in vars:
-            oracle.cx(var_qubits[var], temp_qubits[temp])
-
-    # Create Grover operator
-    grover_op = grover_operator(
-        oracle, reflection_qubits=var_qubits, insert_barriers=False
-    )
-
-    # Build the main quantum circuit
-    qc = QuantumCircuit(var_qubits, temp_qubits, output_qubit, cbits)
+    qc = QuantumCircuit(*registers)
 
     # Set initial state based on which lights are off (0)
     for i, state in enumerate(initial_state[::-1]):
@@ -139,8 +178,11 @@ def create_lights_out_circuit(size, initial_state, num_iterations=3):
     qc.x(output_qubit)
     qc.h(output_qubit)
 
-    # Apply Grover iterations
-    qc.compose(grover_op.power(num_iterations), inplace=True)
+    for _ in range(num_iterations):
+        add_oracle(
+            qc, var_qubits, temp_qubits, output_qubit, conditions, ancilla_qubits
+        )
+        add_grover_diffusion(qc, var_qubits)
 
     # Measure the variable qubits
     qc.measure(var_qubits, cbits)
@@ -178,12 +220,11 @@ def create_circuit_from_matrix(initial_state_matrix):
     )
 
     # Print circuit statistics
-    n = size * size
-    total_qubits = 2 * n + 1  # var_qubits + temp_qubits + output_qubit
-    num_gates = qc.size()  # Total number of gates
+    total_qubits = qc.num_qubits
+    num_gates = qc.size()
 
     print(f"Grid size: {size}x{size}")
-    print(f"Total qubits required: {total_qubits} ({n} var + {n} temp + 1 output)")
+    print(f"Total qubits required: {total_qubits}")
     print(f"Total gates in circuit: {num_gates}")
     print(f"Grover iterations: {num_iterations}")
 
@@ -261,21 +302,47 @@ def plot_top_results(counts, top_n=20, filename="plot"):
     plt.savefig(filename, dpi=150, bbox_inches="tight")
 
 
-def run_on_ibm_hardware(qc, shots=10_000, min_qubits=None):
+def run_on_ibm_hardware(qc, shots=5_000, min_qubits=None):
     service = QiskitRuntimeService()
 
-    # backend = service.least_busy(
-    #     simulator=False, operational=True, min_num_qubits=min_qubits
-    # )
-    backend = service.backend("ibm_marrakesh")
-    print("Running on " + backend.name)
+    backend = service.least_busy(
+        simulator=False, operational=True, min_num_qubits=min_qubits
+    )
+    # backend = service.backend("ibm_marrakesh")
+    print("Will run on " + backend.name)
     pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
     isa_circuit = pm.run(qc)
-    isa_circuit.draw(output="mpl", idle_wires=False, style="iqp").savefig(
-        "full-circuit"
+
+    from qiskit.transpiler import PassManager, InstructionDurations
+    from qiskit.transpiler.passes import ALAPScheduleAnalysis, PadDynamicalDecoupling
+    from qiskit.circuit.library import XGate
+
+    # Retrieve backend constraints
+    durations = InstructionDurations.from_backend(backend)
+    # Try to get pulse alignment
+    pulse_alignment = backend.target.timing_constraints().pulse_alignment
+
+    # Use a simple XY4 or XX sequence. X-X is identity and robust against T2.
+    dd_sequence = [XGate(), XGate()]
+
+    # We must analyze scheduling (ALAP) before padding with DD
+    dd_pm = PassManager(
+        [
+            ALAPScheduleAnalysis(durations),
+            PadDynamicalDecoupling(
+                durations, dd_sequence, pulse_alignment=pulse_alignment
+            ),
+        ]
     )
+
+    # Apply DD to the transpiled (ISA) circuit
+    isa_circuit = dd_pm.run(isa_circuit)
+    print("Applied Dynamical Decoupling (X-X) to idle qubits.")
+
+    isa_circuit.draw(output="mpl", idle_wires=False, style="iqp").savefig("ibm-circuit")
     sampler = Sampler(mode=backend)
     sampler.options.default_shots = shots
+    print("Running the sampler...")
     result = sampler.run([isa_circuit]).result()
     counts = result[0].data.cbits.get_counts()
 
@@ -283,17 +350,17 @@ def run_on_ibm_hardware(qc, shots=10_000, min_qubits=None):
 
 
 # 0 - turned off, 1 - turned on
-# initial_state_matrix = [
-#     [1, 1, 0],
-#     [1, 0, 1],
-#     [1, 0, 1],
-# ]
+initial_state_matrix = [
+    [1, 1, 0],
+    [1, 0, 1],
+    [1, 0, 1],
+]
 # Solution: 101 011 100
 
-initial_state_matrix = [
-    [1, 0],
-    [0, 1],
-]
+# initial_state_matrix = [
+#     [1, 0],
+#     [0, 1],
+# ]
 
 # Create circuit from matrix
 qc, var_qubits, cbits, size = create_circuit_from_matrix(initial_state_matrix)
@@ -312,7 +379,7 @@ qc.draw("mpl").savefig("circuit")
 # Run the circuit
 # counts = run_on_ibm_simulator(qc, shots=1000)
 # counts = run_on_ibm_hardware(qc)
-counts = run_circuit(qc, shots=1_000_000)
+counts = run_circuit(qc, shots=1_000)
 
 # Plot the top results
 plot_top_results(counts, top_n=20, filename="plot")
