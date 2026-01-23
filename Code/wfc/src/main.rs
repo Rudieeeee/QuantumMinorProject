@@ -39,7 +39,7 @@ impl eframe::App for App {
             ui.add(egui::Slider::new(&mut self.height, 1..=16).text("Height"));
 
             if ui.button("Generate").clicked() {
-                let tiles = wfc::classical::generate((self.width, self.height)).unwrap();
+                let tiles = wfc::generate((self.width, self.height)).unwrap();
                 let image = ColorImage::new(
                     [self.width, self.height],
                     tiles
