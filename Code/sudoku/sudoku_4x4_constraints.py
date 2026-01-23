@@ -1,4 +1,5 @@
 from sudoku_4x4_generator import generate_puzzle
+import random
 
 def index_unknowns(board):
     unknown_map = {}
@@ -103,31 +104,47 @@ def minimal_relative_constraints(board, unknown_map):
 
     return sorted(constraints)
 
-def generate_constraints(nr_constraints, test=False):
+def generate_constraints(nr_unknowns, nr_constraints, test=False):
     if (test):
-        puzzle = [[3, 0, 4, 0], [0, 1, 0, 2], [0, 4, 0, 3], [2, 0, 1, 0]]
+        puzzle = [[0, 0, 4, 0], [4, 2, 0, 1], [0, 4, 1, 3], [3, 1, 0, 4]]
     else:
-        puzzle = generate_puzzle(8)
+        puzzle = generate_puzzle(16 - nr_unknowns)
 
     unknown_map = index_unknowns(puzzle)
 
     # value_constraints = generate_value_constraints(puzzle, unknown_map)
     # relative_constraints = generate_relative_constraints(unknown_map)
 
-    value_constraints = minimal_value_constraints(puzzle, unknown_map)
-    relative_constraints = minimal_relative_constraints(puzzle, unknown_map)
+    all_val_constraints = minimal_value_constraints(puzzle, unknown_map)
+    all_rel_constraints = minimal_relative_constraints(puzzle, unknown_map)
+
+    random.seed(42) 
+    random.shuffle(all_val_constraints)
+    random.shuffle(all_rel_constraints)
 
     print("Puzzle:")
     for row in puzzle:
         print(row)
 
-    nr_vc = int(3 * len(value_constraints) / 4)
-    nr_rc = nr_constraints - nr_vc
+    total_available = len(all_val_constraints) + len(all_rel_constraints)
+    limit = min(nr_constraints, total_available)
 
-    print("\nValue constraints:")
-    print(value_constraints[: nr_vc])
+    nr_vc = int(limit * 0.7)
+    nr_rc = limit - nr_vc
 
-    print("\nRelative constraints:")
-    print(relative_constraints[ : nr_rc])
+    if nr_vc > len(all_val_constraints):
+        nr_vc = len(all_val_constraints)
+        nr_rc = limit - nr_vc
+    
+    if nr_rc > len(all_rel_constraints):
+        nr_rc = len(all_rel_constraints)
+        nr_vc = limit - nr_rc
 
-    return value_constraints[: nr_vc], relative_constraints[ : nr_rc]
+    final_vc = all_val_constraints[:nr_vc]
+    final_rc = all_rel_constraints[:nr_rc]
+
+    print(f"\nRequested: {nr_constraints} | Returning: {len(final_vc) + len(final_rc)}")
+    print(f"Value constraints ({len(final_vc)}): {final_vc}")
+    print(f"Relative constraints ({len(final_rc)}): {final_rc}")
+
+    return final_vc, final_rc
