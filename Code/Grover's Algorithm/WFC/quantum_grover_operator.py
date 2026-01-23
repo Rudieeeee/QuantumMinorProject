@@ -133,11 +133,15 @@ if __name__ == "__main__":
     qc.compose(grover_op.power(GROVER_ITERATIONS), inplace=True)
     checkerboard_x(qc)
     qc.measure(DATA_QUBITS, range(DATA_QUBIT_COUNT))
-    
-    print("Running simulation...")
+
+    print(f"\nCircuit depth before transpilation: {qc.depth()}")
+    print("Transpiling circuit...")
     backend = Aer.get_backend("qasm_simulator")
     pm = generate_preset_pass_manager(target=backend.target, optimization_level=3)
     circuit_isa = pm.run(qc)
+    print(f"Circuit depth after transpilation: {circuit_isa.depth()}")
+    
+    print("\nRunning simulation...")
     result = backend.run(circuit_isa, shots=SHOT_COUNT).result()
     counts = result.get_counts()
     
