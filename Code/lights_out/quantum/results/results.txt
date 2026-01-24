@@ -1,0 +1,96 @@
+2x2 case:
+Solving for input '1001'
+Correct solution: '1001'
+
+Circuit: `circuit.png`
+
+---
+
+Results:
+
+Ran on ibm_marrakesh, 100k shots.
+Image: `ibm_100k.png`
+```
+Grid size: 2x2
+Total qubits required: 11
+Total gates in circuit: 156
+Grover iterations: 3
+Will run on ibm_marrakesh
+Applied Dynamical Decoupling
+Total gates in IBM circuit: 3593
+Running the IBM sampler...
+Top 16 results out of 16 total outcomes:
+  1001: 10682 (10.68%)
+  0001: 7037 (7.04%)
+  1000: 6644 (6.64%)
+  0000: 6585 (6.59%)
+  0100: 6434 (6.43%)
+  0010: 6370 (6.37%)
+  0111: 6021 (6.02%)
+  0101: 6013 (6.01%)
+  0110: 5955 (5.96%)
+  0011: 5840 (5.84%)
+  1101: 5554 (5.55%)
+  1010: 5553 (5.55%)
+  1100: 5550 (5.55%)
+  1011: 5536 (5.54%)
+  1110: 5433 (5.43%)
+  1111: 4793 (4.79%)
+```
+
+---
+
+Ran on perfect simulator, 100k shots
+Image: `perfect_simulator_100k.png`
+```
+Grid size: 2x2
+Total qubits required: 11
+Total gates in circuit: 156
+Grover iterations: 3
+Top 16 results out of 16 total outcomes:
+  1001: 96075 (96.08%)
+  0001: 278 (0.28%)
+  0111: 275 (0.27%)
+  1011: 273 (0.27%)
+  0110: 268 (0.27%)
+  1110: 268 (0.27%)
+  1000: 268 (0.27%)
+  1101: 267 (0.27%)
+  0000: 267 (0.27%)
+  0101: 261 (0.26%)
+  1010: 257 (0.26%)
+  1111: 257 (0.26%)
+  1100: 255 (0.26%)
+  0011: 251 (0.25%)
+  0100: 242 (0.24%)
+  0010: 238 (0.24%)
+```
+
+---
+
+Ran on FakeMarrakesh, 10k shots:
+Image: `fake_marrakesh_10k.png`
+```
+Grid size: 2x2
+Total qubits required: 11
+Total gates in circuit: 156
+Grover iterations: 3
+Transpiled
+Top 16 results out of 16 total outcomes:
+  1001: 3102 (31.02%)
+  0001: 595 (5.95%)
+  1101: 578 (5.78%)
+  1000: 534 (5.34%)
+  1011: 499 (4.99%)
+  0111: 470 (4.70%)
+  0010: 454 (4.54%)
+  0000: 449 (4.49%)
+  1110: 433 (4.33%)
+  0101: 428 (4.28%)
+  1010: 426 (4.26%)
+  0100: 421 (4.21%)
+  0011: 417 (4.17%)
+  1111: 409 (4.09%)
+  1100: 404 (4.04%)
+  0110: 381 (3.81%)
+```
