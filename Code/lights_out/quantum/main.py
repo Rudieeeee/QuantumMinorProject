@@ -321,8 +321,8 @@ qc, var_qubits, cbits, size = create_circuit_from_matrix(initial_state_matrix)
 
 qc.draw("mpl").savefig("circuit")
 
-# counts = run_on_ibm_simulator(qc, shots=1000)
-counts = run_on_ibm_hardware(qc, shots=100_000)
-# counts = run_on_perfect_simulator(qc, shots=100_000)
+# counts = run_on_ibm_simulator(qc, shots=10_000)
+# counts = run_on_ibm_hardware(qc, shots=100_000)
+counts = run_on_perfect_simulator(qc, shots=100_000)
 
 plot_top_results(counts, top_n=20, filename="plot")
