@@ -13,6 +13,10 @@ Total: k empty cells → k qubits (where k ≤ 4)
 """
 from typing import List, Optional, Tuple
 import math
+import matplotlib.pyplot as plt
+from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+from qiskit import transpile, QuantumCircuit
+from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 Grid = List[List[int]]
 
@@ -341,3 +345,184 @@ def grover_solve_2x2(puzzle: Grid) -> Optional[Grid]:
     print_grid(grid)
     
     return grid
+
+def grover_solve_ibm(puzzle: Grid) -> Optional[Grid]:
+    """
+    Solve 2x2 Sudoku using Grover's algorithm on IBM Quantum Hardware.
+    """
+    print("Connecting to IBM Quantum Service...")
+    try:
+        service = QiskitRuntimeService(channel="ibm_quantum_platform")
+    except Exception as e:
+        print(f"Connection with 'ibm_quantum_platform' failed: {e}")
+        try:
+            service = QiskitRuntimeService()
+        except Exception as e2:
+            print(f"{e2}")
+            return None
+
+    empty_positions = [(i, j) for i in range(2) for j in range(2) if puzzle[i][j] == 0]
+    k = len(empty_positions)
+    
+    if k == 0:
+        print("Puzzle already solved.")
+        return [row[:] for row in puzzle]
+
+    num_qubits_needed = k + 1 + max(0, k - 2)
+    print(f"Requesting backend with at least {num_qubits_needed} qubits...")
+    
+    try:
+        backend = service.least_busy(
+            operational=True, 
+            simulator=False, 
+            min_num_qubits=num_qubits_needed
+        )
+        print(f"Selected backend: {backend.name}")
+    except Exception as e:
+        print("No suitable backend found. Try again later or check your access.")
+        return None
+
+    solutions = enumerate_valid_assignments_2x2(puzzle, empty_positions)
+    if not solutions:
+        print("No valid assignments exist.")
+        return None
+    
+    print(f"Found {len(solutions)} solution(s). Constructing circuit...")
+
+    N = 2 ** k
+    M = len(solutions)
+    iters = max(1, int(math.floor((math.pi / 4) * math.sqrt(N / M))))
+    print(f"Grover iterations: {iters}")
+
+    # circuit setup
+    n = k
+    anc_for_mcx = max(0, n - 2)
+    total_qubits = n + anc_for_mcx + 1
+    
+    qc = QuantumCircuit(total_qubits, n)
+    data_qubits = list(range(n))
+    anc_qubits = list(range(n, n + anc_for_mcx)) if anc_for_mcx > 0 else []
+    phase_anc = n + anc_for_mcx
+
+    # initialization
+    qc.h(data_qubits)
+    
+    # oracle Helper
+    def apply_oracle(target_solutions):
+        for bs in target_solutions:
+            for i in range(len(bs)):
+                if bs[i] == "0":
+                    qc.x(data_qubits[i])
+            qc.x(phase_anc)
+            qc.h(phase_anc)
+            if n == 1: qc.cx(data_qubits[0], phase_anc)
+            elif n == 2: qc.ccx(data_qubits[0], data_qubits[1], phase_anc)
+            else: qc.mcx(data_qubits, phase_anc, anc_qubits)
+            qc.h(phase_anc)
+            qc.x(phase_anc)
+            for i in range(len(bs)):
+                if bs[i] == "0":
+                    qc.x(data_qubits[i])
+
+    # diffusion Helper
+    def apply_diffusion():
+        qc.h(data_qubits)
+        qc.x(data_qubits)
+        qc.x(phase_anc)
+        qc.h(phase_anc)
+        if n == 1: qc.cx(data_qubits[0], phase_anc)
+        elif n == 2: qc.ccx(data_qubits[0], data_qubits[1], phase_anc)
+        else: qc.mcx(data_qubits, phase_anc, anc_qubits)
+        qc.h(phase_anc)
+        qc.x(phase_anc)
+        qc.x(data_qubits)
+        qc.h(data_qubits)
+
+    # apply Grover Iterations
+    for _ in range(iters):
+        apply_oracle(solutions)
+        apply_diffusion()
+
+    qc.measure(data_qubits, range(n))
+
+    # transpile and Execute
+    print("Transpiling circuit...")
+    pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+    isa_circuit = pm.run(qc)
+
+    print("Submitting job to IBM Quantum...")
+    sampler = Sampler(mode=backend)
+    total_shots = 4096
+    job = sampler.run([isa_circuit], shots=total_shots)
+    print(f"Job ID: {job.job_id()}")
+    
+    result = job.result()
+    pub_result = result[0]
+    counts = pub_result.data.c.get_counts()
+    print("\nHardware Counts:", counts)
+
+    best_bitstring = max(counts, key=counts.get)
+    best_be = best_bitstring[::-1] # reverse for little-endian
+    
+    print(f"Most frequent measurement: {best_bitstring} (interpreted as {best_be})")
+
+    vals = []
+    for i in range(k):
+        if i < len(best_be):
+            bit = int(best_be[i])
+            vals.append(2 if bit == 1 else 1)
+        else:
+            vals.append(1)
+    
+    sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    top_result = sorted_counts[0][0]
+
+    print(f"\nTop Result from Hardware: {top_result}")
+
+    top_20 = sorted_counts[:20]
+    labels = [x[0] for x in top_20]
+    probabilities = [x[1] / total_shots for x in top_20]
+
+    plt.figure(figsize=(12, 6))
+    bars = plt.bar(labels, probabilities, color='indigo')
+    for bar in bars:
+        yval = bar.get_height()
+        
+        if yval > 0.01:
+            plt.text(
+                bar.get_x() + bar.get_width()/2, 
+                yval + 0.01,              
+                f'{yval:.2%}',             
+                ha='center', va='bottom', 
+                fontsize=14, rotation=0,
+                fontweight = 'bold'    
+            )
+
+    plt.ylim(0, max(probabilities) * 1.3)
+    plt.xlabel('Measurement Bitstring')
+    plt.ylabel('Probability')
+    plt.title(f'Real Hardware Results ({backend.name})\nShots={total_shots}')
+    plt.xticks(rotation=90, fontname='Monospace')
+    plt.tight_layout()
+    plt.savefig('ibm_hardware_result_2x2.png')
+    print("Saved hardware plot to 'ibm_hardware_result_2x2.png'")
+
+    final_grid = [row[:] for row in puzzle]
+    for i, (r, c) in enumerate(empty_positions):
+        final_grid[r][c] = vals[i]
+
+    print("\nFinal Solution from Quantum Hardware:")
+    print_grid(final_grid)
+    return final_grid
+
+if __name__ == "__main__":
+    puzzle = [
+        [0, 0],
+        [2, 1]
+    ]
+
+    print("Input Puzzle:")
+    print_grid(puzzle)
+    print("-" * 20)
+
+    grover_solve_ibm(puzzle)
