@@ -166,39 +166,58 @@ def build_circuit(iterations) :
     qc.measure(var, c)
     return qc
 
-
-# AER SIMULATOR RUN
+# RUN ON AER SIMULATOR
 def run_aer_simulation(num_iterations):
     qc_result = build_circuit(num_iterations)
     print(f"Circuit Width: {qc_result.num_qubits} qubits (Should be < 30)")
     print(f"Running simulation with {num_iterations} iterations...")
     backend = AerSimulator(method='statevector')
-    job = backend.run(transpile(qc_result, backend), shots=2048)
+    
+    total_shots = 2048
+    transpiled_qc = transpile(qc_result, backend)
+    job = backend.run(transpiled_qc, shots=total_shots)
     result = job.result()
     counts = result.get_counts()
 
-    # Process Data for Plotting
+    print(f"Original Gates: {qc_result.size()}")
+    print(f"Transpiled Gates (Real Hardware): {transpiled_qc.size()}")
+    print(f"Depth: {transpiled_qc.depth()}")
+
+    # process Data for Plotting
     sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
     top_20 = sorted_counts[:20]
     labels = [x[0] for x in top_20]
-    values = [x[1] for x in top_20]
+    probabilities = [x[1] / total_shots for x in top_20]
 
     print("Top Result:", labels[0])
 
-    # Plotting
+    # plotting
     plt.figure(figsize=(12, 6))
-    bars = plt.bar(labels, values, color='skyblue')
-    # Highlight the top bar
+    bars = plt.bar(labels, probabilities, color='skyblue')
     bars[0].set_color('crimson')
+    for bar in bars:
+        yval = bar.get_height()
+        
+        if yval > 0.01:
+            plt.text(
+                bar.get_x() + bar.get_width()/2, 
+                yval + 0.01,              
+                f'{yval:.2%}',             
+                ha='center', va='bottom', 
+                fontsize=14, rotation=0,
+                fontweight = 'bold'    
+            )
+
+    plt.ylim(0, max(probabilities) * 1.3)
 
     plt.xlabel('Measurement Bitstring (Result)', fontsize=12)
-    plt.ylabel('Count / Probability', fontsize=12)
-    plt.title(f'Grover Search Results (Top 20 States)', fontsize=14)
+    plt.ylabel('Probability', fontsize=12)
+    plt.title(f'Grover Search Results (Top 20 States)\nShots={total_shots}', fontsize=14)
     plt.xticks(rotation=90, fontname='Monospace')
     plt.tight_layout()
     plt.show()
 
-    # Decode
+    # decode
     bits = labels[0][::-1]
     print("\n--- DECODED SUDOKU ---")
     for i in range(nr_unkowns):
@@ -218,16 +237,21 @@ def run_ibm(num_iterations):
     backend = service.least_busy(operational=True, simulator=False, min_num_qubits=27)
     print(f"Selected Backend: {backend.name}")
 
-    print("Transpiling circuit for hardware (this may take a minute)...")
+    print("Transpiling circuit for hardware...")
     pm = generate_preset_pass_manager(backend=backend, optimization_level=3) # optimization 3 to reduce depth of grover
     qc_result = build_circuit(num_iterations)
     isa_qc = pm.run(qc_result) 
+    
+    print(f"Original Gates: {qc_result.size()}")
+    print(f"Transpiled Gates (Real Hardware): {isa_qc.size()}")
+    print(f"Depth: {isa_qc.depth()}")
 
     print(f"Submitting job to {backend.name}")
     sampler = Sampler(mode=backend)
 
     # running the job
-    job = sampler.run([isa_qc], shots=4096)
+    total_shots = 4096
+    job = sampler.run([isa_qc], shots=total_shots)
 
     print(f"Job submitted! ID: {job.job_id()}")
     print("Waiting for results...")
@@ -243,13 +267,27 @@ def run_ibm(num_iterations):
 
     top_20 = sorted_counts[:20]
     labels = [x[0] for x in top_20]
-    values = [x[1] for x in top_20]
+    probabilities= [x[1] / total_shots for x in top_20]
 
     plt.figure(figsize=(12, 6))
-    bars = plt.bar(labels, values, color='indigo')
+    bars = plt.bar(labels, probabilities, color='indigo')
+    for bar in bars:
+        yval = bar.get_height()
+        
+        if yval > 0.01:
+            plt.text(
+                bar.get_x() + bar.get_width()/2, 
+                yval + 0.01,              
+                f'{yval:.2%}',             
+                ha='center', va='bottom', 
+                fontsize=14, rotation=0,
+                fontweight = 'bold'    
+            )
+
+    plt.ylim(0, max(probabilities) * 1.3)
     plt.xlabel('Measurement Bitstring')
-    plt.ylabel('Counts')
-    plt.title(f'Real Hardware Results ({backend.name})\nShots=4096')
+    plt.ylabel('Probability')
+    plt.title(f'Real Hardware Results ({backend.name})\nShots={total_shots}')
     plt.xticks(rotation=90, fontname='Monospace')
     plt.tight_layout()
     plt.savefig('ibm_hardware_result.png')
@@ -264,65 +302,68 @@ def run_ibm(num_iterations):
             val = int(chunk[::-1], 2) + 1
             print(f"Variable x{i}: {val}")
 
+def run_ibm_death_curve(target_bitstring):
+    print(f"\nIBM QUANTUM: COHERENCE LIMIT ANALYSIS")
+    
+    service = QiskitRuntimeService()
+    print("Searching for least busy backend...")
+    backend = service.least_busy(operational=True, simulator=False, min_num_qubits=27)
+    print(f"Selected Backend: {backend.name}")
 
-def run_normal_noise_comparison(number_iterations):
-    # print("\n1. Finding Ground Truth (Ideal Simulation)")
-    # # Run ideal simulation to find the correct answer
-    # ideal_qc = build_circuit(number_iterations) # 45 is optimal for 6 unknowns
-    # backend_ideal = AerSimulator(method='statevector')
-    # job_ideal = backend_ideal.run(transpile(ideal_qc, backend_ideal), shots=1024)
-    # counts_ideal = job_ideal.result().get_counts()
-    # correct_bitstring = max(counts_ideal, key=counts_ideal.get)
-
-    # print(f"Correct Answer identified: {correct_bitstring}")
-    # print(f"Ideal Probability: {counts_ideal[correct_bitstring]/1024:.2%}")
-
-    # print("\n2: The 'Death Curve' Experiment (Noisy Simulation)")
-
-    # Create a Fake Backend (Mimics a real IBM Quantum chip with 27 qubits)
-    fake_backend = GenericBackendV2(num_qubits=25) 
-    noise_model = NoiseModel.from_backend(fake_backend)
-    backend_noisy = AerSimulator(noise_model=noise_model)
-
-    iteration_steps = [1, 5, 10, 20, 35, 50]
-    noisy_probabilities = []
-    shots = 1024
-
+    iteration_steps = [1, 5, 10, 20, 30, 40, 48] 
+    print(f"Building circuits for iterations: {iteration_steps}")
+    
+    raw_circuits = []
     for k in iteration_steps:
-        print(f"Running noisy simulation with {k} iterations...", end="", flush=True)
-        
-        # Build and run
-        qc_noisy = build_circuit(iterations=k)
-        t_qc = transpile(qc_noisy, backend_noisy, optimization_level=1)
-        job = backend_noisy.run(t_qc, shots=shots)
-        result = job.result()
-        counts = result.get_counts()
-        
-        # Get count of the CORRECT answer (if found), else 0
-        correct_count = counts.get("010110011000", 0)
-        prob = correct_count / shots
-        noisy_probabilities.append(prob)
-        
-        print(f" Done. Success Prob: {prob:.2%}")
+        qc = build_circuit(k)
+        raw_circuits.append(qc)
 
-    plt.figure(figsize=(10, 6))
+    print("Transpiling batch...")
+    pm = generate_preset_pass_manager(backend=backend, optimization_level=3)
+    isa_circuits = pm.run(raw_circuits) 
 
-    plt.plot(iteration_steps, noisy_probabilities, 'o-', color='crimson', linewidth=2, label='Noisy Simulation (IBM Fake)')
+    print(f"Submitting batch job to {backend.name}...")
+    sampler = Sampler(mode=backend)
+    
+    total_shots = 4096
+    job = sampler.run(isa_circuits, shots=total_shots)
+    
+    print(f"Job submitted! ID: {job.job_id()}")
+    print("Waiting for results...")
+    result = job.result()
+    print("Job complete! Processing data...")
+    hw_probabilities = []
+    
+    for i, pub_result in enumerate(result):
+        counts = pub_result.data.c.get_counts()
+        total_counts = sum(counts.values())
+    
+        correct_count = counts.get(target_bitstring, 0)
+        
+        prob = correct_count / total_counts
+        hw_probabilities.append(prob)
+        print(f"  Iter {iteration_steps[i]}: {prob:.2%}")
 
+    plt.figure(figsize=(10, 6))    
+    plt.plot(iteration_steps, hw_probabilities, 'o-', color='purple', linewidth=2, label=f'IBM Hardware ({backend.name})')
     import numpy as np
     x_theory = np.linspace(0, 50, 100)
-    theta = np.arcsin(1/np.sqrt(4096)) # Initial angle
+    theta = np.arcsin(1/np.sqrt(4096))
     y_theory = np.sin((2 * x_theory + 1) * theta)**2
-    plt.plot(x_theory, y_theory, '--', color='gray', alpha=0.5, label='Ideal Theory (No Noise)')
+    plt.plot(x_theory, y_theory, '--', color='gray', alpha=0.5, label='Ideal Theory')
 
-    # Formatting
-    plt.axvline(x=48, color='green', linestyle=':', label='Optimal Depth (k=48)')
-    plt.xlabel('Number of Grover Iterations', fontsize=12)
+    plt.xlabel('Grover Iterations', fontsize=12)
     plt.ylabel('Probability of Correct Solution', fontsize=12)
-    plt.title('The Coherence Wall: Grover\'s Algorithm vs. Noise', fontsize=14)
+    plt.title(f'The Reality Gap: Ideal vs Real Hardware ({backend.name})', fontsize=14)
     plt.legend()
     plt.grid(True, alpha=0.3)
-
+    
+    filename = 'ibm_death_curve.png'
+    plt.savefig(filename)
+    print(f"Plot saved to {filename}")
     plt.show()
 
-run_normal_noise_comparison(45)
+
+run_aer_simulation(50)
+# run_ibm(45)
+# run_ibm_death_curve("010110011000")
