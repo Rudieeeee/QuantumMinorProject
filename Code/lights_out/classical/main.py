@@ -1,206 +1,127 @@
-# import numpy as np
-
-# def lights_out_solver(board):
-#     """
-#     Solve Lights Out using Gaussian elimination over GF(2).
-#     board: 2D list or numpy array of 0s and 1s.
-#     Returns a solution matrix of presses (0/1), or None if no solution.
-#     """
-#     board = np.array(board, dtype=int)
-#     n, m = board.shape
-#     size = n * m
-
-#     # Helper to convert 2D index to 1D
-#     def idx(r, c):
-#         return r * m + c
-
-#     # Build coefficient matrix A and vector b
-#     A = np.zeros((size, size), dtype=int)
-#     b = board.flatten()
-
-#     for r in range(n):
-#         for c in range(m):
-#             i = idx(r, c)
-#             # This button toggles itself and its neighbors
-#             for dr, dc in [(0,0), (1,0), (-1,0), (0,1), (0,-1)]:
-#                 rr, cc = r + dr, c + dc
-#                 if 0 <= rr < n and 0 <= cc < m:
-#                     j = idx(rr, cc)
-#                     A[j, i] = 1  # pressing i affects light j
-
-#     # Gaussian elimination over GF(2)
-#     A = np.concatenate([A, b.reshape(-1, 1)], axis=1)
-#     rows, cols = A.shape
-#     col = 0
-
-#     for row in range(rows):
-#         if col >= cols - 1:
-#             break
-
-#         # Find pivot
-#         pivot = None
-#         for r in range(row, rows):
-#             if A[r, col] == 1:
-#                 pivot = r
-#                 break
-#         if pivot is None:
-#             col += 1
-#             continue
-
-#         # Swap rows
-#         A[[row, pivot]] = A[[pivot, row]]
-
-#         # Eliminate other rows
-#         for r in range(rows):
-#             if r != row and A[r, col] == 1:
-#                 A[r] ^= A[row]  # XOR row
-
-#         col += 1
-
-#     # Check for inconsistency
-#     for r in range(rows):
-#         if np.all(A[r, :-1] == 0) and A[r, -1] == 1:
-#             return None  # No solution
-
-#     # Extract solution (free variables set to 0)
-#     x = np.zeros(size, dtype=int)
-#     for r in range(rows):
-#         pivot_col = np.where(A[r, :-1] == 1)[0]
-#         if len(pivot_col) > 0:
-#             x[pivot_col[0]] = A[r, -1]
-
-#     return x.reshape(n, m)
-
-# # Example usage:
-# board = [
-#     [1, 1, 1],
-#     [1, 1, 0],
-#     [1, 0, 1]
-# ]
-
-# solution = lights_out_solver(board)
-# print(solution)
-
-'''
-side="top" → default, put it at the top
-
-side="bottom" → put at bottom
-
-side="left" → left side
-
-side="right" → right side
-
-padx=10 → horizontal padding
-
-pady=10 → vertical padding
-
-fill="x" → stretch horizontally
-
-fill="y" → stretch vertically
-
-expand=True → let it expand to fill extra space
-'''
-
-import tkinter as tk
-from tkinter import messagebox
-import numpy as np
+import pygame
 import time
+import numpy as np
+import matplotlib.pyplot as plt
+import random
 
+WINDOW_WIDTH = 600
+WINDOW_HEIGHT = 740
+GRID_TOP = 140
+GRID_GAP = 5
 
-class LightsOutApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Lights Out Solver (Gaussian Elimination)")
+#colors
+COLOR_BG = (30, 30, 30)
+COLOR_OFF = (50, 50, 50)
+COLOR_ON = (255, 200, 0)
+COLOR_PANEL = (40, 40, 40)
+COLOR_BUTTON = (100, 100, 100)
+COLOR_BUTTON_ACTIVE = (200, 180, 0)
+COLOR_TEXT = (255, 255, 255)
 
-        self.size = tk.IntVar(value=5)
+#init
+pygame.init()
+screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+pygame.display.set_caption("Lights Out (Pygame)")
+font = pygame.font.SysFont(None, 28)
 
-        top_frame = tk.Frame(root)
-        top_frame.pack(pady=5)
+#state
+grid_size = 5
+grid = [[0]*grid_size for _ in range(grid_size)]
+mode = "toggle"
+dragged_cells = set()
+elapsed_time = 0.0
+current_solution = []
+congrats_start_time = None
+unsolvable_start_time = None
 
-        tk.Label(top_frame, text="Grid size:").pack(side=tk.LEFT)
-        tk.Spinbox(top_frame, from_=2, to=10, width=5, textvariable=self.size).pack(side=tk.LEFT, padx=5)
-        tk.Button(top_frame, text="Create Grid", command=self.create_grid).pack(side=tk.LEFT, padx=5)
-        tk.Button(top_frame, text="Solve", command=self.solve).pack(side=tk.LEFT, padx=5)
+def draw_button(rect, text, active=False):
+    color = COLOR_BUTTON_ACTIVE if active else COLOR_BUTTON
+    pygame.draw.rect(screen, color, rect)
+    txt_surf = font.render(text, True, COLOR_TEXT)
+    txt_rect = txt_surf.get_rect(center=rect.center)
+    screen.blit(txt_surf, txt_rect)
 
-        self.canvas = tk.Canvas(root, width=400, height=400)
-        self.canvas.pack()
+def draw_top_panel():
+    panel_rect = pygame.Rect(0,0,WINDOW_WIDTH, GRID_TOP)
+    pygame.draw.rect(screen, COLOR_PANEL, panel_rect)
 
-        self.info_label = tk.Label(root, text="")
-        self.info_label.pack(pady=5)
+    toggle_rect = pygame.Rect(20, 20, 100, 40)
+    play_rect = pygame.Rect(140, 20, 100, 40)
+    draw_button(toggle_rect, "Toggle", mode=="toggle")
+    draw_button(play_rect, "Play", mode=="play")
 
-        self.grid = []
-        self.rectangles = []
-        self.solution = None
-        self.cell_size = 60
+    size_label = font.render(f"Size: {grid_size}", True, COLOR_TEXT)
+    screen.blit(size_label, (260, 30))
+    plus_rect = pygame.Rect(340, 20, 40, 40)
+    minus_rect = pygame.Rect(390, 20, 40, 40)
+    draw_button(plus_rect, "+")
+    draw_button(minus_rect, "-")
 
-        self.create_grid()
+    solve_rect = pygame.Rect(450, 20, 100, 40)
+    draw_button(solve_rect, "Solve")
 
-    def create_grid(self):
-        self.canvas.delete("all")
-        self.grid = []
-        self.rectangles = []
-        self.solution = None
-        self.info_label.config(text="")
+    generate_rect = pygame.Rect(390, 70, 160, 40)
+    draw_button(generate_rect, "Generate Board")
 
-        n = self.size.get()
-        canvas_size = min(500, max(300, n * self.cell_size))
-        self.canvas.config(width=canvas_size, height=canvas_size)
-        self.cell_size = canvas_size // n
+    benchmark_rect = pygame.Rect(20, 100, 130, 30)
+    draw_button(benchmark_rect, "Benchmark")
 
-        for r in range(n):
-            row = []
-            rect_row = []
-            for c in range(n):
-                x1 = c * self.cell_size
-                y1 = r * self.cell_size
-                x2 = x1 + self.cell_size
-                y2 = y1 + self.cell_size
+    time_msg = font.render(f"Time: {elapsed_time:.3f}ms", True, COLOR_TEXT)
+    screen.blit(time_msg, (20, 70))
 
-                rect = self.canvas.create_rectangle(x1, y1, x2, y2, fill="black", outline="gray")
-                self.canvas.tag_bind(rect, "<Button-1>", lambda e, r=r, c=c: self.toggle_cell(r, c))
-                row.append(0)
-                rect_row.append(rect)
-            self.grid.append(row)
-            self.rectangles.append(rect_row)
+    return {
+        "toggle": toggle_rect,
+        "play": play_rect,
+        "plus": plus_rect,
+        "minus": minus_rect,
+        "solve": solve_rect,
+        "generate": generate_rect,
+        "benchmark": benchmark_rect
+    }
 
-    def toggle_cell(self, r, c):
-        self.grid[r][c] ^= 1
-        color = "yellow" if self.grid[r][c] == 1 else "black"
-        self.canvas.itemconfig(self.rectangles[r][c], fill=color)
+def tile_rect(r, c):
+    size = (WINDOW_WIDTH - GRID_GAP*(grid_size+1)) // grid_size
+    x = GRID_GAP + c*(size + GRID_GAP)
+    y = GRID_TOP + GRID_GAP + r*(size + GRID_GAP)
+    return pygame.Rect(x, y, size, size)
 
-    def draw_solution(self):
-        self.canvas.delete("solution")
-        if self.solution is None:
-            return
+def toggle_play(r, c):
+    for dr, dc in [(0,0),(1,0),(-1,0),(0,1),(0,-1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < grid_size and 0 <= nc < grid_size:
+            grid[nr][nc] ^= 1
 
-        n = self.size.get()
-        for r in range(n):
-            for c in range(n):
-                if self.solution[r][c] == 1:
-                    cx = c * self.cell_size + self.cell_size // 2
-                    cy = r * self.cell_size + self.cell_size // 2
-                    radius = self.cell_size // 6
-                    self.canvas.create_oval(
-                        cx - radius, cy - radius,
-                        cx + radius, cy + radius,
-                        fill="red", tags="solution"
-                    )
+def handle_drag(pos):
+    for r in range(grid_size):
+        for c in range(grid_size):
+            rect = tile_rect(r, c)
+            if rect.collidepoint(pos) and (r,c) not in dragged_cells:
+                grid[r][c] ^= 1
+                dragged_cells.add((r,c))
 
-    def solve(self):
-        start_time = time.perf_counter()
-        solution = solve_lights_out(self.grid)
-        end_time = time.perf_counter()
+def handle_click(pos):
+    pressed_light = False
+    for r in range(grid_size):
+        for c in range(grid_size):
+            rect = tile_rect(r, c)
+            if rect.collidepoint(pos):
+                toggle_play(r,c)
+                pressed_light = True
+                break
+    return pressed_light
 
-        if solution is None:
-            messagebox.showerror("No solution", "This configuration has no solution.")
-            return
+def draw_grid():
+    for r in range(grid_size):
+        for c in range(grid_size):
+            rect = tile_rect(r,c)
+            color = COLOR_ON if grid[r][c] else COLOR_OFF
+            pygame.draw.rect(screen, color, rect)
 
-        self.solution = solution
-        self.draw_solution()
-
-        elapsed_ms = (end_time - start_time) * 1000
-        self.info_label.config(text=f"Solved in {elapsed_ms:.3f} ms")
-
+def generate_solvable_board(grid_size):
+    for _ in range(random.randint(grid_size, grid_size**2)):
+        r = random.randint(0, grid_size-1)
+        c = random.randint(0, grid_size-1)
+        toggle_play(r,c)
 
 def solve_lights_out(board):
     board = np.array(board, dtype=int)
@@ -257,11 +178,156 @@ def solve_lights_out(board):
         pivot_cols = np.where(M[r, :-1] == 1)[0]
         if len(pivot_cols) > 0:
             x[pivot_cols[0]] = M[r, -1]
+    x = x.reshape(n, m)
 
-    return x.reshape(n, m)
+    solution_coords = []
+    for r in range(n):
+        for c in range(m):
+            if x[r, c] == 1:
+                solution_coords.append((r, c))
+    return solution_coords
 
+def congrats_message():
+    global congrats_start_time
+    if congrats_start_time is not None:
+        if time.time() - congrats_start_time < 3:
+            msg_surf = font.render("Congratulations!", True, (255,255,0))
+            screen.blit(msg_surf, (270 - msg_surf.get_width()//2, 70))
+        else:
+            congrats_start_time = None
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = LightsOutApp(root)
-    root.mainloop()
+def unsolvable_message():
+    global unsolvable_start_time
+    if unsolvable_start_time is not None:
+        if time.time() - unsolvable_start_time < 3:
+            msg_surf = font.render("Board is unsolvable!", True, (255,0,0))
+            screen.blit(msg_surf, (270 - msg_surf.get_width()//2, 70))
+        else:
+            unsolvable_start_time = None
+
+def benchmark():
+    results = {}
+    runs_per_size = 100
+
+    for grid_size in range(3, 11):
+        times = []
+
+        for _ in range(runs_per_size):
+            grid = [[0]*grid_size for _ in range(grid_size)]
+            generate_solvable_board(grid_size)
+            board_copy = [row[:] for row in grid]
+
+            start = time.perf_counter()
+            solve_lights_out(board_copy)
+            end = time.perf_counter()
+
+            times.append((end - start) * 1000)
+
+        avg_time = sum(times) / len(times)
+        results[grid_size] = avg_time
+        
+        print(f"Grid {grid_size}x{grid_size}: {avg_time:.3f} ms")
+
+    plot_benchmark(results)
+
+def plot_benchmark(results):
+    sizes = np.array(list(results.keys()))
+    times = np.array(list(results.values()))
+
+    # constant = (times[4] - times[0] * (sizes[4] / sizes[0])**6) / (1 - (sizes[4] / sizes[0])**6)
+    # times = times - constant
+
+    #power law
+    coeffs = np.polyfit(np.log(sizes), np.log(times), 1)
+    exponent = coeffs[0]
+    fitted_times = np.exp(coeffs[1]) * sizes**exponent
+
+    #n^6 (scaled to match)
+    theory_times = times[0] * (sizes / sizes[0])**6
+
+    plt.figure(figsize=(8, 6))
+    plt.plot(sizes, times, "o-", label="Measured Average Time")
+    plt.plot(sizes, fitted_times, "--", label=f"Fitted Curve ~ n^{exponent:.2f}")
+    plt.plot(sizes, theory_times, ":", label=f"Theoretical ~ n^{6}")
+
+    plt.xlabel("Grid Size (n x n)")
+    plt.ylabel("Average Solve Time (ms)")
+    plt.title("Lights Out Solver Benchmark")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+running = True
+mouse_down = False
+clock = pygame.time.Clock()
+
+def draw_solution(current_solution):
+    for r,c in current_solution:
+        rect = tile_rect(r,c)
+        pygame.draw.circle(screen, (255,0,0), rect.center, rect.width//6)
+
+while running:
+    screen.fill(COLOR_BG)
+    button_rects = draw_top_panel()
+    draw_grid()
+    draw_solution(current_solution)
+    congrats_message()
+    unsolvable_message()
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button==1:
+            mouse_down = True
+            dragged_cells.clear()
+            pos = event.pos
+
+            if button_rects["toggle"].collidepoint(pos):
+                mode = "toggle"
+            elif button_rects["play"].collidepoint(pos):
+                mode = "play"
+            elif button_rects["plus"].collidepoint(pos):
+                grid_size = min(10, grid_size+1)
+                grid = [[0]*grid_size for _ in range(grid_size)]
+            elif button_rects["minus"].collidepoint(pos):
+                grid_size = max(3, grid_size-1)
+                grid = [[0]*grid_size for _ in range(grid_size)]
+            elif button_rects["solve"].collidepoint(pos):
+                start_time = time.time()
+                solution = solve_lights_out(grid)
+                elapsed_time = (time.time() - start_time) * 1000
+                if solution is None:
+                    unsolvable_start_time = time.time()
+                    congrats_start_time = None
+                    current_solution = []
+                else:
+                    current_solution = solution
+                print(f"Solver ran in {elapsed_time:.3f}s")
+            elif button_rects["generate"].collidepoint(pos):
+                grid = [[0]*grid_size for _ in range(grid_size)]
+                generate_solvable_board(grid_size)
+                current_solution = []
+            elif button_rects["benchmark"].collidepoint(pos):
+                benchmark()
+            else:
+                if mode == "toggle":
+                    handle_drag(pos)
+                else:
+                    light_pressed = handle_click(pos)
+                    if light_pressed == True and all(grid[r][c]==0 for r in range(grid_size) for c in range(grid_size)):
+                        congrats_start_time = time.time()
+                        unsolvable_start_time = None
+                        current_solution = []
+
+        elif event.type == pygame.MOUSEBUTTONUP and event.button==1:
+            mouse_down = False
+
+        elif event.type == pygame.MOUSEMOTION and mouse_down:
+            if mode == "toggle":
+                handle_drag(event.pos)
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
