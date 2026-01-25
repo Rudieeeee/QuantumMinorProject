@@ -9,8 +9,8 @@ from qiskit.transpiler.preset_passmanagers import generate_preset_pass_manager
 
 import matplotlib.pyplot as plt
 
-GRID_ROW_COUNT = 5
-GRID_COL_COUNT = 5
+GRID_ROW_COUNT = 4
+GRID_COL_COUNT = 4
 GRID_TILE_COUNT = GRID_ROW_COUNT * GRID_COL_COUNT
 GRID_EDGES = []
 for row in range(GRID_ROW_COUNT):
@@ -25,9 +25,11 @@ for row in range(GRID_ROW_COUNT - 1):
         b = GRID_COL_COUNT * (row + 1) + col
         GRID_EDGES.append((a, b))
         GRID_EDGES.append((b, a))
+
+CONSTRAINT_COUNT = len(GRID_EDGES)
         
 DATA_QUBIT_COUNT = GRID_TILE_COUNT * 2
-ANCILLA_QUBIT_COUNT = len(GRID_EDGES)
+ANCILLA_QUBIT_COUNT = CONSTRAINT_COUNT * 2 - 1
 TOTAL_QUBIT_COUNT = DATA_QUBIT_COUNT + ANCILLA_QUBIT_COUNT
     
 DATA_QUBITS = list(range(DATA_QUBIT_COUNT))
@@ -59,21 +61,26 @@ def checkerboard_x(qc):
 def constraints():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
     for i, (a, b) in enumerate(GRID_EDGES):
-        data_a = DATA_QUBITS[a*2:a*2+2]
-        data_b = DATA_QUBITS[b*2+1]
+        data = list(chain(DATA_QUBITS[a*2:a*2+2], DATA_QUBITS[b*2+1:b*2+2]))
         ancilla = ANCILLA_QUBITS[i]
-        qc.mcx([data_a[0], data_a[1], data_b], ancilla)
-        qc.x([data_a[0], data_a[1], data_b])
-        qc.mcx([data_a[0], data_a[1], data_b], ancilla)
-        qc.x([data_a[0], data_a[1], data_b])
-    qc.x(ANCILLA_QUBITS)
+        qc.mcx(data, ancilla)
+        qc.x(data)
+        qc.mcx(data, ancilla)
+        qc.x(data)
+        qc.x(ancilla)
+    i = 0
+    j = CONSTRAINT_COUNT
+    while j < ANCILLA_QUBIT_COUNT:
+        qc.ccx(ANCILLA_QUBITS[i], ANCILLA_QUBITS[i+1], ANCILLA_QUBITS[j])
+        i += 2
+        j += 1
     return qc
 
 def grover_oracle():
     qc = QuantumCircuit(TOTAL_QUBIT_COUNT)
     constraints_qc = constraints()
     qc.compose(constraints_qc, inplace=True)
-    qc.compose(MCMTGate(ZGate(), ANCILLA_QUBIT_COUNT, DATA_QUBIT_COUNT), chain(ANCILLA_QUBITS, DATA_QUBITS), inplace=True)
+    qc.z(ANCILLA_QUBITS[-1])
     qc.compose(constraints_qc.inverse(), inplace=True)
     return qc
 
