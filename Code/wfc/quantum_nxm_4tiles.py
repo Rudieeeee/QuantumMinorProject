@@ -4,34 +4,22 @@ from qiskit.visualization import plot_histogram
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ==================================================
-# CONFIG
-# ==================================================
 ROWS = 2
 COLS = 3
 SHOTS = 40960
 BITS_PER_TILE = 2  # 4 tiles
 
-# ==================================================
-# Helper: XNOR
-# ==================================================
 def xnor(qc, a, b, out):
     qc.cx(a, out)
     qc.cx(b, out)
     qc.x(out)
 
-# ==================================================
-# Index helpers
-# ==================================================
 def tile_idx(r, c):
     return r * COLS + c
 
 def bit_idx(tile, bit):
     return BITS_PER_TILE * tile + bit
 
-# ==================================================
-# Qubit counting
-# ==================================================
 N_TILES = ROWS * COLS
 N_DATA = BITS_PER_TILE * N_TILES
 
@@ -45,14 +33,8 @@ CONSTRAINT_START = FLAG + 1
 TOTAL_QUBITS = N_DATA + 1 + N_CONSTRAINTS
 qc = QuantumCircuit(TOTAL_QUBITS, N_DATA)
 
-# ==================================================
-# 1️⃣ Superposition
-# ==================================================
 qc.h(range(N_DATA))
 
-# ==================================================
-# 2️⃣ Oracle: adjacency constraints
-# ==================================================
 constraint_qubits = []
 k = 0
 
@@ -88,9 +70,6 @@ for r in range(ROWS - 1):
 qc.mcx(constraint_qubits, FLAG)
 qc.z(FLAG)
 
-# ==================================================
-# 3️⃣ Uncompute constraints
-# ==================================================
 qc.mcx(constraint_qubits, FLAG)
 
 k -= 1
@@ -123,9 +102,6 @@ for r in reversed(range(ROWS)):
             )
             k -= 1
 
-# ==================================================
-# 4️⃣ Diffusion operator
-# ==================================================
 qc.h(range(N_DATA))
 qc.x(range(N_DATA))
 
@@ -136,30 +112,18 @@ qc.h(N_DATA - 1)
 qc.x(range(N_DATA))
 qc.h(range(N_DATA))
 
-# ==================================================
-# 5️⃣ Measurement
-# ==================================================
 qc.measure(range(N_DATA), range(N_DATA))
 
-# ==================================================
-# Run
-# ==================================================
 sim = AerSimulator()
 counts = sim.run(qc, shots=SHOTS).result().get_counts()
 
 plot_histogram(counts)
 plt.show()
 
-# ==================================================
-# Pick best state
-# ==================================================
 best_state = max(counts, key=counts.get)
 bits = best_state[::-1]
 print("Chosen state:", bits)
 
-# ==================================================
-# Render grid (decode 2-bit tiles)
-# ==================================================
 tile_colors = {
     "00": [0.2, 0.5, 1.0],   # water
     "01": [0.9, 0.85, 0.6],  # sand
