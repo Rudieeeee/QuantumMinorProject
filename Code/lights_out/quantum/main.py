@@ -1,7 +1,8 @@
 import math
 import os
+import random
 import numpy as np
-from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister, transpile
+from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.primitives import StatevectorSampler
 import matplotlib.pyplot as plt
 from qiskit.visualization import plot_histogram
@@ -17,6 +18,59 @@ from qiskit.transpiler.passes import (
 )
 from qiskit.circuit.library import XGate
 from dotenv import load_dotenv
+
+
+def find_optimal_transpiler_seed(
+    qc,
+    backend,
+    optimization_level=3,
+    num_trials=30,
+    seed_space=10_000,
+    verbose=True,
+):
+    assert backend is not None
+    assert qc is not None
+    assert 0 <= optimization_level <= 3
+    assert num_trials >= 1
+    assert seed_space >= 2
+
+    rng = random.Random()
+    seeds = rng.sample(range(seed_space), k=min(num_trials, seed_space))
+
+    best_seed = None
+    best_metrics = None
+    best_score = None
+
+    tried_metrics = []
+
+    for idx, seed in enumerate(seeds, start=1):
+        pm = generate_preset_pass_manager(
+            optimization_level=optimization_level,
+            backend=backend,
+            seed_transpiler=seed,
+        )
+        transpiled = pm.run(qc)
+
+        m = {"seed": seed, "depth": transpiled.depth(), "size": transpiled.size()}
+        tried_metrics.append(m)
+
+        s = (m["depth"], m["size"])
+        if best_score is None or s < best_score:
+            best_score = s
+            best_seed = seed
+            best_metrics = {"depth": m["depth"], "size": m["size"]}
+
+            if verbose:
+                print(
+                    f"[seed search] new best @ trial {idx}/{len(seeds)}: "
+                    f"seed={best_seed}, depth={best_metrics['depth']}, size={best_metrics['size']}"
+                )
+        elif verbose and (idx == 1 or idx % 10 == 0 or idx == len(seeds)):
+            print(
+                f"[seed search] trial {idx}/{len(seeds)} done; best depth={best_metrics['depth']} size={best_metrics['size']}"
+            )
+
+    return best_seed
 
 
 def init_ibm_credentials():
@@ -67,7 +121,14 @@ def mcx(qc, control_qubits, target_qubits, anncilla_qubits):
     qc.rccx(control_qubits[0], control_qubits[1], anncilla_qubits[i])
 
 
-def add_oracle(qc, var_qubits, temp_qubits, output_qubit, conditions, ancilla_qubits):
+def add_oracle(
+    qc,
+    var_qubits,
+    temp_qubits,
+    output_qubit,
+    conditions,
+    ancilla_qubits,
+):
     layers = {}
     for vars, temp in conditions:
         for var in vars:
@@ -84,7 +145,11 @@ def add_oracle(qc, var_qubits, temp_qubits, output_qubit, conditions, ancilla_qu
         for var, temp in layers[offset]:
             qc.cx(var_qubits[var], temp_qubits[temp])
 
-    mcx(qc, temp_qubits, output_qubit, ancilla_qubits)
+    # Use mcx synthesis if ancilla bits are available
+    if ancilla_qubits:
+        mcx(qc, temp_qubits, output_qubit, ancilla_qubits)
+    else:
+        qc.mcx(temp_qubits, output_qubit)
 
     # Uncompute
     for offset in sorted_offsets[::-1]:
@@ -102,21 +167,27 @@ def add_grover_diffusion(qc, var_qubits):
     qc.h(var_qubits)
 
 
-def create_lights_out_circuit(size, initial_state, num_iterations=3):
+def create_lights_out_circuit(
+    size, initial_state, num_iterations=3, synthesize_mcx=True
+):
     n = size * size
 
     var_qubits = QuantumRegister(n, name="v")
     temp_qubits = QuantumRegister(n, name="t")
-
-    # Required for mcx
-    ancilla_qubits = QuantumRegister(n - 2, name="anc")
 
     output_qubit = QuantumRegister(1, name="out")
     cbits = ClassicalRegister(n, name="cbits")
 
     conditions = generate_conditions(size)
 
-    qc = QuantumCircuit(var_qubits, temp_qubits, ancilla_qubits, output_qubit, cbits)
+    if synthesize_mcx:
+        ancilla_qubits = QuantumRegister(n - 2, name="anc")
+        qc = QuantumCircuit(
+            var_qubits, temp_qubits, ancilla_qubits, output_qubit, cbits
+        )
+    else:
+        ancilla_qubits = None
+        qc = QuantumCircuit(var_qubits, temp_qubits, output_qubit, cbits)
 
     # Set initial state based on which lights are off (i.e. 0)
     # Additionally, reverse the bits
@@ -132,7 +203,12 @@ def create_lights_out_circuit(size, initial_state, num_iterations=3):
     # Grover's algorithmn
     for _ in range(num_iterations):
         add_oracle(
-            qc, var_qubits, temp_qubits, output_qubit, conditions, ancilla_qubits
+            qc,
+            var_qubits,
+            temp_qubits,
+            output_qubit[0],
+            conditions,
+            ancilla_qubits,
         )
         add_grover_diffusion(qc, var_qubits)
 
@@ -141,7 +217,7 @@ def create_lights_out_circuit(size, initial_state, num_iterations=3):
     return qc, var_qubits, cbits
 
 
-def create_circuit_from_matrix(initial_state_matrix):
+def create_circuit_from_matrix(initial_state_matrix, synthesize_mcx=True):
     state_array = np.array(initial_state_matrix)
 
     size = state_array.shape[0]
@@ -166,7 +242,7 @@ def create_circuit_from_matrix(initial_state_matrix):
     num_iterations = math.floor(math.pi / 4 * math.sqrt(2 ** (size**2) / num_solutions))
 
     qc, var_qubits, cbits = create_lights_out_circuit(
-        size, initial_state, num_iterations
+        size, initial_state, num_iterations, synthesize_mcx=synthesize_mcx
     )
 
     total_qubits = qc.num_qubits
@@ -176,6 +252,7 @@ def create_circuit_from_matrix(initial_state_matrix):
     print(f"Total qubits required: {total_qubits}")
     print(f"Total gates in circuit: {num_gates}")
     print(f"Grover iterations: {num_iterations}")
+    print(f"Depth of circuit: {qc.depth()}")
 
     return qc, var_qubits, cbits, size
 
@@ -188,11 +265,15 @@ def run_on_perfect_simulator(qc, shots=10_000):
     return counts
 
 
-def run_on_ibm_simulator(qc, shots=10_000):
+def run_on_ibm_simulator(qc, shots=10_000, seed_transpiler=None):
     backend = FakeMarrakesh()
 
-    transpiled = transpile(qc, backend=backend, optimization_level=3)
-    print("Transpiled")
+    pm = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, seed_transpiler=seed_transpiler
+    )
+    transpiled = pm.run(qc)
+    print(f"Total gates in Fake IBM circuit: {transpiled.size()}")
+    print(f"Depth of Fake IBM circuit: {transpiled.depth()}")
     job = backend.run(transpiled, shots=shots)
     result = job.result()
     counts = result.get_counts()
@@ -200,7 +281,7 @@ def run_on_ibm_simulator(qc, shots=10_000):
     return counts
 
 
-def run_on_ibm_hardware(qc, shots=5_000, min_qubits=None):
+def run_on_ibm_hardware(qc, shots=5_000, min_qubits=None, seed_transpiler=None):
     service = QiskitRuntimeService()
 
     # backend = service.least_busy(
@@ -208,7 +289,9 @@ def run_on_ibm_hardware(qc, shots=5_000, min_qubits=None):
     # )
     backend = service.backend("ibm_marrakesh")
     print(f"Will run on {backend.name}")
-    pm = generate_preset_pass_manager(optimization_level=3, backend=backend)
+    pm = generate_preset_pass_manager(
+        optimization_level=3, backend=backend, seed_transpiler=seed_transpiler
+    )
     isa_circuit = pm.run(qc)
 
     target = backend.target
@@ -232,8 +315,8 @@ def run_on_ibm_hardware(qc, shots=5_000, min_qubits=None):
     # Big circuits might take too long to be drawn/saved
     isa_circuit.draw(output="mpl", idle_wires=False).savefig("ibm_circuit")
 
-    num_gates = isa_circuit.size()
-    print(f"Total gates in IBM circuit: {num_gates}")
+    print(f"Total gates in IBM circuit: {isa_circuit.size()}")
+    print(f"Depth of IBM circuit: {isa_circuit.depth()}")
 
     sampler = Sampler(backend)
     sampler.options.default_shots = shots
@@ -317,12 +400,24 @@ initial_state_matrix = [
 ]
 # Solution: 10 01
 
-qc, var_qubits, cbits, size = create_circuit_from_matrix(initial_state_matrix)
+qc, var_qubits, cbits, size = create_circuit_from_matrix(
+    initial_state_matrix, synthesize_mcx=True
+)
 
 qc.draw("mpl").savefig("circuit")
 
-# counts = run_on_ibm_simulator(qc, shots=10_000)
-# counts = run_on_ibm_hardware(qc, shots=100_000)
+# counts = run_on_ibm_simulator(qc, shots=10_000, seed_transpiler=8487914)
+# counts = run_on_ibm_hardware(qc, shots=100_000, seed_transpiler=6177579)
 counts = run_on_perfect_simulator(qc, shots=100_000)
 
 plot_top_results(counts, top_n=20, filename="plot")
+
+# print(find_optimal_transpiler_seed(qc, FakeMarrakesh(), num_trials=10_000, seed_space=10_000_000))
+# print(
+#     find_optimal_transpiler_seed(
+#         qc,
+#         QiskitRuntimeService().backend("ibm_marrakesh"),
+#         num_trials=10_000,
+#         seed_space=10_000_000,
+#     )
+# )
